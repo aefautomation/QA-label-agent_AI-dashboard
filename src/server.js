@@ -93,6 +93,6 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-app.listen(config.port, () => {
-  console.log(`Label Agent luistert op poort ${config.port}`);
+app.listen(config.port, '0.0.0.0', () => {
+  console.log(`Label Agent luistert op 0.0.0.0:${config.port}`);
 });
