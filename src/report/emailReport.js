@@ -1,3 +1,4 @@
+// Builds the short Make-ready email report and matching text report for each generated label.
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -61,7 +62,7 @@ function moreReviewItemsHtml(reviewItems, maxItems = 6) {
 }
 
 function outputReference(run) {
-  return run.sharePointWebUrl || run.sharePointOutputPath || run.outputPath || '';
+  return run.sharePointWebUrl || run.sharePointOutputPath || '';
 }
 
 export function buildEmailReport(run) {

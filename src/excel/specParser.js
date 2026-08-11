@@ -1,3 +1,4 @@
+// Extracts product facts from the 2. BASIC sheet, tolerating small layout shifts in supplier specs.
 import { readWorkbook, sheetRows } from './workbook.js';
 import { isMeaningful, normalizeText } from '../utils/normalize.js';
 import { splitIngredientDeclarationAndWarnings } from '../translation/ingredientDeclaration.js';

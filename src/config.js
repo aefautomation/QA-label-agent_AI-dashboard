@@ -1,3 +1,4 @@
+// Reads runtime configuration from environment variables for Railway and SharePoint use.
 import path from 'node:path';
 
 const cwd = process.cwd();
@@ -42,7 +43,6 @@ export function getConfig() {
     port: Number(env('PORT', '3000')),
     publicBaseUrl: env('PUBLIC_BASE_URL'),
     webhookSecret: env('MAKE_WEBHOOK_SECRET'),
-    outputRoot: path.join(cwd, 'outputs'),
     tmpRoot: path.join(cwd, 'tmp'),
     openai: {
       apiKey: env('OPENAI_API_KEY'),
@@ -52,14 +52,6 @@ export function getConfig() {
       enableFallback: boolEnv('OPENAI_ENABLE_FALLBACK', true),
       enableWebSearch: boolEnv('OPENAI_ENABLE_WEB_SEARCH', true),
       timeoutMs: Number(env('OPENAI_TIMEOUT_MS', '60000'))
-    },
-    local: {
-      translationDbPath: env('LOCAL_TRANSLATION_DB_PATH'),
-      templates: {
-        normal: env('LOCAL_TEMPLATE_NORMAL_PATH'),
-        frozen: env('LOCAL_TEMPLATE_FROZEN_PATH'),
-        fisheryFrozen: env('LOCAL_TEMPLATE_FISHERY_FROZEN_PATH')
-      }
     },
     sharePoint: {
       tenantId: env('SHAREPOINT_TENANT_ID'),
@@ -72,6 +64,7 @@ export function getConfig() {
         channelId: decodeMaybe('TEAMS_CHANNEL_ID')
       },
       paths: {
+        inputFolder: env('SP_INPUT_FOLDER', 'Input'),
         translationDb: env('SP_TRANSLATION_DB_PATH'),
         templates: {
           normal: env('SP_TEMPLATE_NORMAL_PATH'),

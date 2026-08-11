@@ -1,3 +1,4 @@
+// Thin Excel workbook helpers used by parsers and translation database loading.
 import xlsx from 'xlsx';
 
 export function readWorkbook(filePath) {

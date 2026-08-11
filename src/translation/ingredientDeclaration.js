@@ -1,3 +1,4 @@
+// Builds ingredient declarations from trusted database terminology and marks unknown parts for review.
 import { LANGUAGES } from '../config.js';
 import { compactKey } from '../utils/normalize.js';
 import { translateWithOpenAi } from './openaiFallback.js';

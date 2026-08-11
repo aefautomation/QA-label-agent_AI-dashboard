@@ -1,3 +1,4 @@
+// Shared text helpers for normalizing labels, lookup keys, XML text and filenames.
 export function normalizeText(value) {
   return String(value ?? '')
     .normalize('NFKD')

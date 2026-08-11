@@ -5,18 +5,14 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
-    "test:sample": "node scripts/run-sample.js",
-    "bootstrap:teams": "node scripts/bootstrap-teams-channel.js"
+    "dev": "node --watch src/server.js"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "dotenv": "^16.4.7",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
-    "fast-xml-parser": "^4.5.0",
     "jszip": "^3.10.1",
     "multer": "^2.0.2",
     "xlsx": "^0.18.5"

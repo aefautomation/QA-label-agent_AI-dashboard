@@ -1,3 +1,4 @@
+// Appends each label run to the SharePoint Excel run log through a temporary working copy.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import ExcelJS from 'exceljs';
@@ -12,13 +13,13 @@ const HEADERS = [
   'Brand',
   'Legal product',
   'Template type',
+  'Input SharePoint path',
   'Output SharePoint path',
   'Review required',
   'Review item count',
   'Database translations',
   'Fallback translations',
   'Warnings',
-  'Output local path',
   'OpenAI models',
   'Review model escalations'
 ];
@@ -58,12 +59,12 @@ function setupWorksheet(workbook) {
     { width: 38 },
     { width: 18 },
     { width: 46 },
+    { width: 46 },
     { width: 16 },
     { width: 18 },
     { width: 18 },
     { width: 18 },
     { width: 70 },
-    { width: 46 },
     { width: 34 },
     { width: 24 }
   ];
@@ -97,7 +98,7 @@ function translationModelSummary(translations) {
 }
 
 export async function appendRunLog({ run, config, sharePointClient }) {
-  const localRunLog = path.join(config.outputRoot, 'label-agent-runs.xlsx');
+  const localRunLog = path.join(config.tmpRoot, 'run-log', 'label-agent-runs.xlsx');
   await fs.mkdir(path.dirname(localRunLog), { recursive: true });
 
   if (sharePointClient?.enabled && config.sharePoint.paths.runLog) {
@@ -132,13 +133,13 @@ export async function appendRunLog({ run, config, sharePointClient }) {
     run.spec?.brand || '',
     run.spec?.legalProduct || '',
     run.spec?.templateType || '',
+    run.sharePointInputPath || '',
     run.sharePointOutputPath || '',
     run.reviewRequired ? 'YES' : 'NO',
     run.reviewItems?.length || 0,
     counts.database,
     counts.fallback,
     JSON.stringify([...(run.spec?.qaWarnings || []), ...(run.reviewItems || [])]),
-    run.outputPath || '',
     modelSummary.models,
     modelSummary.escalations
   ]);
@@ -154,7 +155,7 @@ export async function appendRunLog({ run, config, sharePointClient }) {
     await workbook.xlsx.writeFile(localRunLog);
   } catch (error) {
     if (!['EBUSY', 'EPERM'].includes(error.code)) throw error;
-    writtenRunLog = path.join(config.outputRoot, `label-agent-runs-pending-${run.runId}.xlsx`);
+    writtenRunLog = path.join(config.tmpRoot, 'run-log', `label-agent-runs-pending-${run.runId}.xlsx`);
     await workbook.xlsx.writeFile(writtenRunLog);
   }
 

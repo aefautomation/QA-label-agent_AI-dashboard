@@ -1,4 +1,4 @@
-import 'dotenv/config';
+// Express API for Make/Railway: starts SharePoint-only label jobs and exposes polling status.
 import express from 'express';
 import multer from 'multer';
 import fs from 'node:fs/promises';
@@ -7,8 +7,11 @@ import { getConfig } from './config.js';
 import { makeRunId, runLabelJob } from './labelAgent.js';
 
 const config = getConfig();
+const uploadDir = path.join(config.tmpRoot, 'uploads');
+await fs.mkdir(uploadDir, { recursive: true });
+
 const upload = multer({
-  dest: path.join(config.tmpRoot, 'uploads'),
+  dest: uploadDir,
   limits: {
     fileSize: 50 * 1024 * 1024,
     files: 5
@@ -18,7 +21,6 @@ const upload = multer({
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use('/outputs', express.static(config.outputRoot));
 
 const jobs = new Map();
 
@@ -40,23 +42,13 @@ function pickSpecFile(files = []) {
   );
 }
 
-function publicDownloadUrl(filePath) {
-  if (!config.publicBaseUrl || !filePath) return '';
-  const relative = path.relative(config.outputRoot, filePath).replace(/\\/g, '/');
-  return `${config.publicBaseUrl.replace(/\/+$/g, '')}/outputs/${relative.split('/').map(encodeURIComponent).join('/')}`;
-}
-
 function publicEndpoint(pathname) {
   if (!config.publicBaseUrl) return pathname;
   return `${config.publicBaseUrl.replace(/\/+$/g, '')}${pathname}`;
 }
 
 function responseResult(result) {
-  return {
-    ...result,
-    downloadUrl: publicDownloadUrl(result.outputPath),
-    reportDownloadUrl: publicDownloadUrl(result.reportPath)
-  };
+  return result;
 }
 
 function isAsyncRequest(req) {
@@ -64,32 +56,8 @@ function isAsyncRequest(req) {
   return ['1', 'true', 'yes', 'ja', 'async'].includes(String(value || '').toLowerCase());
 }
 
-async function writeJobState(job) {
-  const jobDir = path.join(config.outputRoot, 'jobs');
-  await fs.mkdir(jobDir, { recursive: true });
-  await fs.writeFile(path.join(jobDir, `${job.runId}.json`), JSON.stringify(job, null, 2), 'utf8');
-}
-
-async function persistJobState(job) {
-  try {
-    await writeJobState(job);
-  } catch (error) {
-    console.error('Job-status opslaan mislukt:', error);
-  }
-}
-
-async function readJobState(runId) {
-  const cached = jobs.get(runId);
-  if (cached) return cached;
-
-  try {
-    const filePath = path.join(config.outputRoot, 'jobs', `${runId}.json`);
-    const job = JSON.parse(await fs.readFile(filePath, 'utf8'));
-    jobs.set(runId, job);
-    return job;
-  } catch {
-    return null;
-  }
+function readJobState(runId) {
+  return jobs.get(runId) || null;
 }
 
 function startAsyncLabelJob({ runId, jobArgs }) {
@@ -105,7 +73,6 @@ function startAsyncLabelJob({ runId, jobArgs }) {
   };
 
   jobs.set(runId, job);
-  void persistJobState(job);
 
   runLabelJob({ ...jobArgs, runId })
     .then(async (result) => {
@@ -113,15 +80,13 @@ function startAsyncLabelJob({ runId, jobArgs }) {
       job.completedAt = new Date().toISOString();
       job.result = responseResult(result);
       jobs.set(runId, job);
-      await persistJobState(job);
     })
-    .catch(async (error) => {
+    .catch((error) => {
       console.error(error);
       job.status = 'failed';
       job.failedAt = new Date().toISOString();
       job.error = error.message || 'Onbekende fout';
       jobs.set(runId, job);
-      await persistJobState(job);
     });
 }
 
@@ -136,7 +101,7 @@ app.get('/health', (_req, res) => {
 });
 
 app.get('/labels/:runId', requireAuth, async (req, res) => {
-  const job = await readJobState(req.params.runId);
+  const job = readJobState(req.params.runId);
   if (!job) {
     return res.status(404).json({
       status: 'not_found',
@@ -171,7 +136,6 @@ app.get('/labels/:runId', requireAuth, async (req, res) => {
 
 app.post('/labels', requireAuth, upload.any(), async (req, res, next) => {
   try {
-    await fs.mkdir(config.tmpRoot, { recursive: true });
     const specFile = pickSpecFile(req.files);
     const sharePointSpecPath = req.body.sharePointSpecPath || req.body.specSharePointPath || '';
     const source = {
@@ -201,10 +165,6 @@ app.post('/labels', requireAuth, upload.any(), async (req, res, next) => {
     const result = await runLabelJob({
       ...jobArgs
     });
-
-    if (req.query.response === 'docx') {
-      return res.download(result.outputPath);
-    }
 
     return res.json(responseResult(result));
   } catch (error) {

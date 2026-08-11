@@ -1,3 +1,4 @@
+// Translates one label field: first via the translation database, then via OpenAI fallback when needed.
 import { LANGUAGES } from '../config.js';
 import { translateWithOpenAi } from './openaiFallback.js';
 

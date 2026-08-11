@@ -1,3 +1,4 @@
+// Loads Labels_13_talen.xlsx and exposes trusted lookup helpers for all label languages.
 import { LANGUAGES } from '../config.js';
 import { readWorkbook, sheetRows } from '../excel/workbook.js';
 import { compactKey, isMeaningful, normalizeText } from '../utils/normalize.js';

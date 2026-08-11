@@ -1,3 +1,4 @@
+// Handles OpenAI fallback translation/research for texts that are not trusted database hits.
 import { LANGUAGES } from '../config.js';
 import { LEGAL_REFS, LEGAL_TRANSLATION_INSTRUCTIONS } from './legalRefs.js';
 

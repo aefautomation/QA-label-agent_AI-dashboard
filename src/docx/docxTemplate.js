@@ -1,3 +1,4 @@
+// Fills the selected Word label template and applies green/red QA color coding in DOCX XML.
 import fs from 'node:fs/promises';
 import JSZip from 'jszip';
 import { LANGUAGES } from '../config.js';

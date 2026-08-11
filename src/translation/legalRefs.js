@@ -1,3 +1,4 @@
+// Central legal reference list and instructions used by OpenAI fallback prompts.
 export const LEGAL_REFS = [
   {
     key: 'EU_1169_2011_MANDATORY',

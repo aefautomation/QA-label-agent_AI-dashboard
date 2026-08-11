@@ -1,3 +1,4 @@
+// Microsoft Graph client for Teams/SharePoint file download, upload and folder management.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 

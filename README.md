@@ -1,6 +1,6 @@
 # Label Agent
 
-HTTP-agent voor Make/Railway die uit productspecificaties een meertalig labeldocument maakt.
+HTTP-agent voor Make/Railway die uit productspecificaties een meertalig labeldocument maakt. De agent draait SharePoint-only: templates, vertalingendatabase, output en run-log komen uit of gaan naar de Teams/SharePoint kanaalmap.
 
 ## Werkwijze
 
@@ -34,15 +34,7 @@ Run log/
   label-agent-runs.xlsx
 ```
 
-De Excel met vertalingen en de sjablonen blijven gewone bewerkbare Office-bestanden. De agent downloadt bij elke run de actuele versies uit de Teams-kanaalmap, dus wijzigingen zijn meteen actief zonder redeploy.
-
-Eenmalig vullen vanuit de huidige lokale bestanden kan met:
-
-```bash
-npm run bootstrap:teams
-```
-
-Dit script maakt `Input`, `Output` en `Run log` aan en uploadt de huidige templates plus `Labels_13_talen.xlsx`.
+De Excel met vertalingen en de sjablonen blijven gewone bewerkbare Office-bestanden. De agent downloadt bij elke run de actuele versies uit de Teams-kanaalmap, dus wijzigingen zijn meteen actief zonder redeploy. Lokale template- of databasepaden worden niet meer ondersteund.
 
 ### Teams channel mode
 
@@ -67,6 +59,7 @@ SP_TRANSLATION_DB_PATH=Database/Labels_13_talen.xlsx
 SP_TEMPLATE_NORMAL_PATH=Templates/BI09-....docx
 SP_TEMPLATE_FROZEN_PATH=Templates/BI13-....docx
 SP_TEMPLATE_FISHERY_FROZEN_PATH=Templates/BI53-....docx
+SP_INPUT_FOLDER=Input
 SP_OUTPUT_FOLDER=Output
 SP_RUN_LOG_PATH=Run log/label-agent-runs.xlsx
 ```
@@ -169,12 +162,14 @@ Zodra `status` `completed` is, bevat de response het gekozen sjabloon, reviewsta
 ```json
 {
   "status": "completed",
+  "sharePointInputPath": "Input/2026-08-11/spec.xlsx",
+  "sharePointOutputPath": "Output/2026-08-11/label.docx",
+  "sharePointWebUrl": "https://...",
   "emailReport": {
     "subject": "Label DV7837-01 - review nodig",
     "text": "platte tekst voor Make mailbody",
     "html": "<div>HTML-versie voor Make mailbody</div>"
   },
-  "reportPath": "outputs/.../...-rapportage.txt",
   "sharePointReportPath": "Output/2026-08-11/...-rapportage.txt",
   "sharePointReportWebUrl": "https://..."
 }
@@ -182,7 +177,7 @@ Zodra `status` `completed` is, bevat de response het gekozen sjabloon, reviewsta
 
 ## Railway
 
-Zet de variabelen uit `.env.example` in Railway. Voor SharePoint gebruikt de agent Microsoft Graph met app-only credentials:
+Zet de variabelen in Railway. Voor SharePoint gebruikt de agent Microsoft Graph met app-only credentials:
 
 - `SHAREPOINT_TENANT_ID`
 - `SHAREPOINT_CLIENT_ID`
@@ -199,15 +194,15 @@ Voor Teams channel mode gebruikt de agent `GET /teams/{team-id}/channels/{channe
 Aanbevolen flow:
 
 1. Mailhook ontvangt mail met productspecificatie.
-2. Make uploadt de spec naar `Input/` in het Teams-kanaal, of stuurt hem direct multipart door.
+2. Make stuurt de spec direct multipart door naar de agent. De agent slaat de ontvangen spec automatisch op in `Input/YYYY-MM-DD/` in SharePoint.
 3. Make roept `POST /labels?async=true` aan.
 4. Make krijgt direct `runId` en `statusUrl` terug.
 5. Make wacht bijvoorbeeld 20-30 seconden.
 6. Make roept `GET /labels/{runId}` aan.
 7. Als `status=processing`: wacht opnieuw en poll nogmaals.
 8. Als `status=completed`: Make leest `emailReport.subject` en `emailReport.html` of `emailReport.text` uit de JSON-response voor de mail.
-9. Make gebruikt `sharePointWebUrl` of `downloadUrl` voor het gemaakte Word-label.
-10. Optioneel: voeg `sharePointReportWebUrl` of `reportDownloadUrl` toe als extra bijlage/link.
+9. Make gebruikt `sharePointWebUrl` voor het gemaakte Word-label.
+10. Optioneel: voeg `sharePointReportWebUrl` toe als extra bijlage/link.
 11. Bij `reviewRequired=true`: stuur naar QA/human check.
 
 ## Belangrijke compliance-regel

@@ -1,6 +1,7 @@
+// Orchestrates one label run: parse spec, select assets, translate, fill DOCX, upload and log.
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { getConfig } from './config.js';
+import { getConfig, hasSharePointConfig } from './config.js';
 import { parseSpecification } from './excel/specParser.js';
 import { loadTranslationDb } from './translation/translationDb.js';
 import { translateField } from './translation/translator.js';
@@ -17,25 +18,19 @@ export function makeRunId() {
   return `${stamp}-${random}`;
 }
 
-async function copyOrDownloadAsset({ sharePointClient, sharePointPath, localPath, targetPath }) {
-  if (sharePointClient?.enabled && sharePointPath) {
-    await sharePointClient.downloadToFile(sharePointPath, targetPath);
-    return {
-      path: targetPath,
-      source: 'sharepoint',
-      sharePointPath
-    };
+async function downloadSharePointAsset({ sharePointClient, sharePointPath, targetPath, label }) {
+  if (!sharePointClient?.enabled) {
+    throw new Error('SharePoint/Teams is verplicht geconfigureerd; lokale templates of databases worden niet meer gebruikt.');
+  }
+  if (!sharePointPath) {
+    throw new Error(`SharePoint-pad ontbreekt voor ${label}. Controleer de SP_* Railway variables.`);
   }
 
-  if (!localPath) {
-    throw new Error(`Asset ontbreekt: geen SharePoint-pad of lokaal pad ingesteld voor ${targetPath}.`);
-  }
-
-  await fs.copyFile(localPath, targetPath);
+  await sharePointClient.downloadToFile(sharePointPath, targetPath);
   return {
     path: targetPath,
-    source: 'local',
-    localPath
+    source: 'sharepoint',
+    sharePointPath
   };
 }
 
@@ -43,11 +38,11 @@ async function resolveAssets({ config, runDir, sharePointClient, templateType })
   const assetDir = path.join(runDir, 'assets');
   await fs.mkdir(assetDir, { recursive: true });
 
-  const translationDb = await copyOrDownloadAsset({
+  const translationDb = await downloadSharePointAsset({
     sharePointClient,
     sharePointPath: config.sharePoint.paths.translationDb,
-    localPath: config.local.translationDbPath,
-    targetPath: path.join(assetDir, 'Labels_13_talen.xlsx')
+    targetPath: path.join(assetDir, 'Labels_13_talen.xlsx'),
+    label: 'vertalingendatabase'
   });
 
   const templateName = {
@@ -56,11 +51,11 @@ async function resolveAssets({ config, runDir, sharePointClient, templateType })
     fisheryFrozen: 'template-fishery-frozen.docx'
   }[templateType];
 
-  const template = await copyOrDownloadAsset({
+  const template = await downloadSharePointAsset({
     sharePointClient,
     sharePointPath: config.sharePoint.paths.templates[templateType],
-    localPath: config.local.templates[templateType],
-    targetPath: path.join(assetDir, templateName)
+    targetPath: path.join(assetDir, templateName),
+    label: `sjabloon ${templateType}`
   });
 
   return { translationDb, template };
@@ -215,18 +210,44 @@ async function resolveSpecPath({ sharePointSpecPath, specPath, runDir, sharePoin
   return specPath;
 }
 
+async function uploadMultipartSpecToSharePoint({ sharePointClient, config, specPath, source, runId, timestamp }) {
+  if (!specPath || source.kind !== 'multipart') {
+    return {
+      path: '',
+      webUrl: ''
+    };
+  }
+
+  const day = timestamp.slice(0, 10);
+  const originalName = source.originalFileName || path.basename(specPath);
+  const fileName = `${runId}-${safeFilePart(originalName)}`;
+  const sharePointPath = `${config.sharePoint.paths.inputFolder}/${day}/${fileName}`;
+  const upload = await sharePointClient.uploadFile(
+    specPath,
+    sharePointPath,
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  );
+
+  return {
+    path: sharePointPath,
+    webUrl: upload?.webUrl || ''
+  };
+}
+
 export async function runLabelJob({
   specPath,
   sharePointSpecPath,
   source = {},
-  outputRoot,
   config = getConfig(),
   runId: providedRunId
 }) {
+  if (!hasSharePointConfig(config)) {
+    throw new Error('SharePoint/Teams configuratie ontbreekt. Deze agent draait SharePoint-only.');
+  }
+
   const runId = providedRunId || makeRunId();
   const timestamp = new Date().toISOString();
-  const root = outputRoot || config.outputRoot;
-  const runDir = path.join(root, runId);
+  const runDir = path.join(config.tmpRoot, 'runs', runId);
   await fs.mkdir(runDir, { recursive: true });
 
   const sharePointClient = new SharePointClient(config.sharePoint);
@@ -235,6 +256,14 @@ export async function runLabelJob({
     specPath,
     runDir,
     sharePointClient
+  });
+  const sharePointInput = await uploadMultipartSpecToSharePoint({
+    sharePointClient,
+    config,
+    specPath: resolvedSpecPath,
+    source,
+    runId,
+    timestamp
   });
 
   const spec = parseSpecification(resolvedSpecPath);
@@ -275,16 +304,14 @@ export async function runLabelJob({
   let sharePointOutputPath = '';
   let sharePointReport = null;
   let sharePointReportPath = '';
-  if (sharePointClient.enabled) {
-    const day = timestamp.slice(0, 10);
-    sharePointOutputPath = `${config.sharePoint.paths.outputFolder}/${day}/${outputFileName}`;
-    sharePointOutput = await sharePointClient.uploadFile(
-      outputPath,
-      sharePointOutputPath,
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    );
-    sharePointReportPath = `${config.sharePoint.paths.outputFolder}/${day}/${reportFileName}`;
-  }
+  const day = timestamp.slice(0, 10);
+  sharePointOutputPath = `${config.sharePoint.paths.outputFolder}/${day}/${outputFileName}`;
+  sharePointOutput = await sharePointClient.uploadFile(
+    outputPath,
+    sharePointOutputPath,
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  );
+  sharePointReportPath = `${config.sharePoint.paths.outputFolder}/${day}/${reportFileName}`;
 
   const run = {
     runId,
@@ -294,7 +321,8 @@ export async function runLabelJob({
     translations,
     reviewRequired: reviewItems.length > 0,
     reviewItems,
-    outputPath,
+    sharePointInputPath: sharePointSpecPath || sharePointInput.path,
+    sharePointInputWebUrl: sharePointInput.webUrl,
     sharePointOutputPath,
     sharePointWebUrl: sharePointOutput?.webUrl || ''
   };
@@ -302,15 +330,14 @@ export async function runLabelJob({
   const emailReport = buildEmailReport(run);
   await fs.writeFile(reportPath, emailReport.text, 'utf8');
 
-  if (sharePointClient.enabled && sharePointReportPath) {
-    sharePointReport = await sharePointClient.uploadFile(
-      reportPath,
-      sharePointReportPath,
-      'text/plain; charset=utf-8'
-    );
-  }
+  sharePointReport = await sharePointClient.uploadFile(
+    reportPath,
+    sharePointReportPath,
+    'text/plain; charset=utf-8'
+  );
 
-  const runLogPath = await appendRunLog({ run, config, sharePointClient });
+  await appendRunLog({ run, config, sharePointClient });
+  await fs.rm(runDir, { recursive: true, force: true });
 
   return {
     runId,
@@ -318,13 +345,12 @@ export async function runLabelJob({
     templateType: spec.templateType,
     articleNumber: spec.articleNumber,
     legalProduct: spec.legalProduct,
-    outputPath,
-    reportPath,
+    sharePointInputPath: sharePointSpecPath || sharePointInput.path,
+    sharePointInputWebUrl: sharePointInput.webUrl,
     sharePointOutputPath,
     sharePointWebUrl: sharePointOutput?.webUrl || '',
     sharePointReportPath,
     sharePointReportWebUrl: sharePointReport?.webUrl || '',
-    runLogPath,
     emailReport,
     reviewRequired: reviewItems.length > 0,
     reviewItems,
