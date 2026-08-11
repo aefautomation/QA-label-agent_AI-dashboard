@@ -38,9 +38,9 @@ function pickSpecFile(files = []) {
   );
 }
 
-function publicDownloadUrl(result) {
-  if (!config.publicBaseUrl || !result.outputPath) return '';
-  const relative = path.relative(config.outputRoot, result.outputPath).replace(/\\/g, '/');
+function publicDownloadUrl(filePath) {
+  if (!config.publicBaseUrl || !filePath) return '';
+  const relative = path.relative(config.outputRoot, filePath).replace(/\\/g, '/');
   return `${config.publicBaseUrl.replace(/\/+$/g, '')}/outputs/${relative.split('/').map(encodeURIComponent).join('/')}`;
 }
 
@@ -78,7 +78,8 @@ app.post('/labels', requireAuth, upload.any(), async (req, res, next) => {
 
     return res.json({
       ...result,
-      downloadUrl: publicDownloadUrl(result)
+      downloadUrl: publicDownloadUrl(result.outputPath),
+      reportDownloadUrl: publicDownloadUrl(result.reportPath)
     });
   } catch (error) {
     return next(error);

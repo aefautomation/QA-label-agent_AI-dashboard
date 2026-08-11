@@ -12,6 +12,13 @@ export function normalizeText(value) {
 export function compactKey(value) {
   return normalizeText(value)
     .replace(/^ingredients:\s*/i, '')
+    .replace(/\bsoybean(s)?\b/g, 'soya bean$1')
+    .replace(/\bsoy\b/g, 'soya')
+    .replace(/\bhydrolyzed\b/g, 'hydrolysed')
+    .replace(/\bflavoring(s)?\b/g, 'flavouring$1')
+    .replace(/\bflavor(s)?\b/g, 'flavour$1')
+    .replace(/\bcolor(s)?\b/g, 'colour$1')
+    .replace(/\bstabilizer(s)?\b/g, 'stabiliser$1')
     .replace(/[.:;]+$/g, '')
     .replace(/[^a-z0-9%<>=+\- ]+/g, ' ')
     .replace(/\s+/g, ' ')

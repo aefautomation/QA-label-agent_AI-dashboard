@@ -11,8 +11,9 @@ HTTP-agent voor Make/Railway die uit productspecificaties een meertalig labeldoc
    - diepvries
    - diepvries + visserijproduct
 4. Vertalingen komen eerst uit `Labels_13_talen.xlsx`.
-5. Ontbrekende vertalingen gaan via OpenAI fallback. Die tekst wordt rood in het Word-document en komt in het reviewrapport.
-6. Output en run-log worden teruggeschreven naar SharePoint.
+5. Ontbrekende vertalingen gaan via OpenAI fallback. Het standaardmodel wordt gebruikt voor normale gevallen; een optioneel reviewmodel wordt alleen gebruikt voor juridisch gevoeligere fallbackgevallen.
+6. Tekst buiten de vertalingendatabase wordt rood in het Word-document gezet en komt in het reviewrapport.
+7. Output en run-log worden teruggeschreven naar SharePoint.
 
 ## Teams/SharePoint mappen
 
@@ -72,6 +73,25 @@ SP_RUN_LOG_PATH=Run log/label-agent-runs.xlsx
 
 Zonder `TEAMS_TEAM_ID` en `TEAMS_CHANNEL_ID` gebruikt de agent de SharePoint document library root zoals eerder.
 
+### OpenAI modellen
+
+De agent gebruikt OpenAI alleen als fallback wanneer een tekst niet betrouwbaar uit `Labels_13_talen.xlsx` komt.
+
+```env
+OPENAI_MODEL=gpt-5-mini
+OPENAI_REVIEW_MODEL=gpt-5
+OPENAI_ENABLE_MODEL_ESCALATION=true
+```
+
+`OPENAI_MODEL` is het standaardmodel. `OPENAI_REVIEW_MODEL` wordt alleen gebruikt bij:
+
+- ingredientendeclaraties met onbekende termen
+- productnaam/wettelijke benaming zonder databasehit
+- waarschuwingen zonder databasehit
+- visserijvelden zonder databasehit
+
+Als `OPENAI_REVIEW_MODEL` leeg is, gebruikt de agent altijd `OPENAI_MODEL`. Alle fallback-output blijft reviewplichtig en rood in het Word-document.
+
 ### Bewerken door QA/marketing
 
 - Pas vertalingen alleen aan in `Database/Labels_13_talen.xlsx` in het Teams-kanaal.
@@ -90,6 +110,7 @@ De agent maakt of werkt `Run log/label-agent-runs.xlsx` bij met:
 - SharePoint-outputpad
 - reviewstatus
 - aantal databasehits versus fallback-vertalingen
+- gebruikte OpenAI modellen en aantal reviewmodel-escalaties
 - QA-waarschuwingen als JSON
 
 ## API
@@ -125,7 +146,20 @@ Content-Type: application/json
 }
 ```
 
-De response is JSON met `runId`, gekozen sjabloon, reviewstatus en SharePoint-outputpad.
+De response is JSON met `runId`, gekozen sjabloon, reviewstatus, SharePoint-outputpad en een kant-en-klare mailrapportage:
+
+```json
+{
+  "emailReport": {
+    "subject": "Label DV7837-01 - review nodig",
+    "text": "platte tekst voor Make mailbody",
+    "html": "<div>HTML-versie voor Make mailbody</div>"
+  },
+  "reportPath": "outputs/.../...-rapportage.txt",
+  "sharePointReportPath": "Output/2026-08-11/...-rapportage.txt",
+  "sharePointReportWebUrl": "https://..."
+}
+```
 
 ## Railway
 
@@ -148,9 +182,18 @@ Aanbevolen flow:
 1. Mailhook ontvangt mail met productspecificatie.
 2. Make uploadt de spec naar `Input/` in het Teams-kanaal, of stuurt hem direct multipart door.
 3. Make roept `POST /labels` aan.
-4. Make leest `sharePointWebUrl`, `sharePointOutputPath`, `reviewRequired` en `reviewItems` uit de JSON-response.
-5. Bij `reviewRequired=true`: stuur naar QA/human check.
+4. Make leest `emailReport.subject` en `emailReport.html` of `emailReport.text` uit de JSON-response voor de mail.
+5. Make gebruikt `sharePointWebUrl` of `downloadUrl` voor het gemaakte Word-label.
+6. Optioneel: voeg `sharePointReportWebUrl` of `reportDownloadUrl` toe als extra bijlage/link.
+7. Bij `reviewRequired=true`: stuur naar QA/human check.
 
 ## Belangrijke compliance-regel
 
 De agent mag ontbrekende vertalingen voorstellen, maar alles buiten de eigen vertalingsdatabase wordt rood gemarkeerd en vereist menselijke QA. Dit is expres streng: voedseletiketten zijn wettelijk gevoelige documenten.
+
+Kleurcodering in het gegenereerde Word-label:
+
+- groen: automatisch ingevuld door de agent, of vertaling/terminologie uit `Labels_13_talen.xlsx`; bij ingredientendeclaraties gebeurt dit per herkende term
+- rood: vertaling/tekst staat niet betrouwbaar in `Labels_13_talen.xlsx` en is fallback/AI/manual-required; bij ingredientendeclaraties gebeurt dit per onbekend tekstdeel
+
+Vaste sjabloontekst die niet door de agent is vervangen blijft ongemarkeerd.

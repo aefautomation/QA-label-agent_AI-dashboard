@@ -5,6 +5,26 @@ function allLanguages(text) {
   return Object.fromEntries(LANGUAGES.map((language) => [language.code, text || '']));
 }
 
+function extractENumbers(text) {
+  return Array.from(String(text || '').matchAll(/\bE\s*\d+[a-z]?\b/gi), (match) =>
+    match[0].replace(/\s+/g, '').toUpperCase()
+  );
+}
+
+function applySourcePlaceholders(translations, sourceText) {
+  const eNumbers = extractENumbers(sourceText);
+  if (!eNumbers.length) return translations;
+
+  const hydrated = {};
+  for (const [languageCode, text] of Object.entries(translations || {})) {
+    let index = 0;
+    hydrated[languageCode] = String(text || '')
+      .replace(/E(?:\u2026|\.\.\.)/g, () => eNumbers[index++] || eNumbers.at(-1))
+      .replace(/\b(E\d+[a-z]?)(may)\b/gi, '$1 may');
+  }
+  return hydrated;
+}
+
 export async function translateField({ fieldName, sourceText, translationDb, openaiConfig, productContext, candidates = [] }) {
   const candidateTexts = [sourceText, ...candidates].filter(Boolean);
   const dbHit = translationDb.lookupMany(candidateTexts);
@@ -14,7 +34,7 @@ export async function translateField({ fieldName, sourceText, translationDb, ope
       sourceText,
       status: 'database',
       trusted: true,
-      translations: dbHit.translations,
+      translations: applySourcePlaceholders(dbHit.translations, sourceText),
       reviewRequired: false,
       reviewReason: '',
       source: dbHit.source,
@@ -40,9 +60,17 @@ export async function translateField({ fieldName, sourceText, translationDb, ope
       reviewReason: 'Geen exacte match in Labels_13_talen.xlsx; fallback/research gebruikt.',
       source: {
         type: fallback.status,
+        model: fallback.model || '',
+        modelTier: fallback.modelTier || '',
+        modelEscalated: Boolean(fallback.modelEscalated),
+        modelReason: fallback.modelReason || '',
         sources: fallback.sources || []
       },
-      notes: fallback.notes || []
+      notes: [
+        ...(fallback.model ? [`OpenAI model: ${fallback.model}${fallback.modelEscalated ? ' (reviewmodel)' : ''}.`] : []),
+        ...(fallback.modelReason ? [`Modelkeuze: ${fallback.modelReason}`] : []),
+        ...(fallback.notes || [])
+      ]
     };
   } catch (error) {
     return {

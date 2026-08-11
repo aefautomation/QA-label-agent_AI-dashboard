@@ -28,7 +28,70 @@ function parseJsonResponse(text) {
   }
 }
 
-export async function translateWithOpenAi({ fieldName, sourceText, config, productContext }) {
+function formatTerminology(terminology = []) {
+  if (!terminology.length) return 'No terminology hits.';
+  return terminology
+    .slice(0, 80)
+    .map((item) => {
+      const translations = LANGUAGES
+        .map((language) => `${language.code}=${item.translations?.[language.code] || ''}`)
+        .join(' | ');
+      return `- Source term "${item.sourceTerm}" must follow database term "${item.databaseTerm}": ${translations}`;
+    })
+    .join('\n');
+}
+
+function escalationReason({ fieldName, fieldKind = '', unmatchedTerms = [] }) {
+  const normalizedField = String(fieldName || '').toLowerCase();
+  if (fieldKind === 'ingredients' && unmatchedTerms.length > 0) {
+    return `Ingredientendeclaratie bevat ${unmatchedTerms.length} onbekende term(en).`;
+  }
+  if (/productnaam|wettelijke|legal product/.test(normalizedField)) {
+    return 'Productnaam/wettelijke benaming zonder databasehit.';
+  }
+  if (/waarschuwing|warning/.test(normalizedField)) {
+    return 'Waarschuwing zonder databasehit.';
+  }
+  if (/visserij|vangst|fishing|fishery|productiemethode/.test(normalizedField)) {
+    return 'Visserijveld zonder databasehit.';
+  }
+  return '';
+}
+
+export function selectOpenAiModel({ config, fieldName, fieldKind = '', unmatchedTerms = [] }) {
+  const standardModel = config?.model || 'gpt-5-mini';
+  const reviewModel = config?.reviewModel || '';
+  const reason = escalationReason({ fieldName, fieldKind, unmatchedTerms });
+  const canEscalate = config?.enableModelEscalation !== false && reviewModel && reviewModel !== standardModel;
+
+  if (reason && canEscalate) {
+    return {
+      model: reviewModel,
+      tier: 'review',
+      escalated: true,
+      reason
+    };
+  }
+
+  return {
+    model: standardModel,
+    tier: 'standard',
+    escalated: false,
+    reason: reason
+      ? `${reason} ${reviewModel ? 'Model-escalatie staat uit; standaardmodel gebruikt.' : 'Geen OPENAI_REVIEW_MODEL ingesteld; standaardmodel gebruikt.'}`
+      : ''
+  };
+}
+
+export async function translateWithOpenAi({
+  fieldName,
+  sourceText,
+  config,
+  productContext,
+  fieldKind = '',
+  terminology = [],
+  unmatchedTerms = []
+}) {
   if (!sourceText) {
     return {
       translations: allLanguages(''),
@@ -37,17 +100,41 @@ export async function translateWithOpenAi({ fieldName, sourceText, config, produ
     };
   }
 
-  if (!config.apiKey) {
+  if (!config.enableFallback || !config.apiKey) {
     return {
       translations: allLanguages(sourceText),
-      notes: ['Geen OPENAI_API_KEY ingesteld; Engelse brontekst is tijdelijk overgenomen en moet handmatig worden vertaald/gecontroleerd.'],
+      notes: [config.enableFallback ? 'Geen OPENAI_API_KEY ingesteld; Engelse brontekst is tijdelijk overgenomen en moet handmatig worden vertaald/gecontroleerd.' : 'OpenAI fallback staat uit; brontekst is tijdelijk overgenomen en moet handmatig worden vertaald/gecontroleerd.'],
       status: 'manual_required'
     };
   }
 
+  const selectedModel = selectOpenAiModel({
+    config,
+    fieldName,
+    fieldKind,
+    unmatchedTerms
+  });
+
   const legalSourceList = LEGAL_REFS.map((ref) => `- ${ref.title}: ${ref.url}`).join('\n');
+  const ingredientInstructions = fieldKind === 'ingredients'
+    ? `
+Ingredient declaration rules:
+- Preserve ingredient order, percentages, E-numbers, compound-ingredient brackets and additive function classes.
+- Use the approved terminology database below wherever applicable.
+- For unmatched terms, find legally conservative food-label names rather than literal casual translations.
+- Keep allergen names emphasised in CAPITALS when present in the source or terminology.
+- Do not add, remove, reorder or merge ingredients.
+
+Approved terminology from Labels_13_talen.xlsx:
+${formatTerminology(terminology)}
+
+Terms without exact database match, requiring legal research:
+${unmatchedTerms.length ? unmatchedTerms.map((term) => `- ${term}`).join('\n') : '- none'}
+`
+    : '';
   const input = `
 ${LEGAL_TRANSLATION_INSTRUCTIONS}
+${ingredientInstructions}
 
 Legal reference sources to use/check where relevant:
 ${legalSourceList}
@@ -81,7 +168,7 @@ Return only JSON:
 }`;
 
   const payload = {
-    model: config.model,
+    model: selectedModel.model,
     input
   };
 
@@ -90,14 +177,25 @@ Return only JSON:
     payload.max_tool_calls = 4;
   }
 
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(payload)
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(config.timeoutMs || 60_000));
+  let response;
+  try {
+    response = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error(`OpenAI fallback timeout na ${config.timeoutMs || 60_000} ms.`);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const responseJson = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -115,6 +213,10 @@ Return only JSON:
     translations,
     notes: Array.isArray(parsed.notes) ? parsed.notes.map(String) : [],
     sources: Array.isArray(parsed.sources) ? parsed.sources.map(String) : [],
+    model: selectedModel.model,
+    modelTier: selectedModel.tier,
+    modelEscalated: selectedModel.escalated,
+    modelReason: selectedModel.reason,
     status: 'openai_researched'
   };
 }

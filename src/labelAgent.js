@@ -4,7 +4,9 @@ import { getConfig } from './config.js';
 import { parseSpecification } from './excel/specParser.js';
 import { loadTranslationDb } from './translation/translationDb.js';
 import { translateField } from './translation/translator.js';
+import { translateIngredientsDeclaration } from './translation/ingredientDeclaration.js';
 import { fillDocxTemplate } from './docx/docxTemplate.js';
+import { buildEmailReport } from './report/emailReport.js';
 import { SharePointClient } from './sharepoint/graphClient.js';
 import { appendRunLog } from './runLog.js';
 import { isMeaningful, safeFilePart } from './utils/normalize.js';
@@ -73,8 +75,28 @@ function reviewItemsFromTranslations(translations) {
       status: field.status,
       sourceText: field.sourceText,
       notes: field.notes || [],
+      model: field.source?.model || '',
+      modelTier: field.source?.modelTier || '',
+      modelEscalated: Boolean(field.source?.modelEscalated),
+      modelReason: field.source?.modelReason || '',
       sources: field.source?.sources || []
     }));
+}
+
+function warningCandidates(sourceText) {
+  const text = String(sourceText || '').trim();
+  const eNumbers = text.match(/\bE\s*\d+[a-z]?\b/gi) || [];
+  const candidates = [text];
+
+  if (/may\s+have\s+an\s+adverse\s+effect\s+on\s+activity\s+and\s+attention\s+(?:in|of)\s+children/i.test(text)) {
+    candidates.push(
+      eNumbers.length > 1
+        ? 'E... and E...may have an adverse effect on activity and attention of children'
+        : 'E... may have an adverse effect on activity and attention of children.'
+    );
+  }
+
+  return candidates;
 }
 
 async function buildTranslations({ spec, translationDb, openaiConfig }) {
@@ -115,7 +137,7 @@ async function buildTranslations({ spec, translationDb, openaiConfig }) {
     warning: {
       fieldName: 'Waarschuwing',
       sourceText: spec.storage.warning,
-      candidates: []
+      candidates: warningCandidates(spec.storage.warning)
     },
     productionMethod: {
       fieldName: 'Visserij productiemethode',
@@ -162,12 +184,21 @@ async function buildTranslations({ spec, translationDb, openaiConfig }) {
       continue;
     }
 
-    translations[key] = await translateField({
-      ...job,
-      translationDb,
-      openaiConfig,
-      productContext
-    });
+    if (key === 'ingredients') {
+      translations[key] = await translateIngredientsDeclaration({
+        ...job,
+        translationDb,
+        openaiConfig,
+        productContext
+      });
+    } else {
+      translations[key] = await translateField({
+        ...job,
+        translationDb,
+        openaiConfig,
+        productContext
+      });
+    }
   }
 
   return translations;
@@ -229,6 +260,8 @@ export async function runLabelJob({
 
   const outputFileName = `${safeFilePart(spec.articleNumber)}-${safeFilePart(spec.legalProduct || spec.description)}-${runId}.docx`;
   const outputPath = path.join(runDir, outputFileName);
+  const reportFileName = `${safeFilePart(spec.articleNumber)}-${safeFilePart(spec.legalProduct || spec.description)}-${runId}-rapportage.txt`;
+  const reportPath = path.join(runDir, reportFileName);
 
   await fillDocxTemplate({
     templatePath: assets.template.path,
@@ -239,6 +272,8 @@ export async function runLabelJob({
 
   let sharePointOutput = null;
   let sharePointOutputPath = '';
+  let sharePointReport = null;
+  let sharePointReportPath = '';
   if (sharePointClient.enabled) {
     const day = timestamp.slice(0, 10);
     sharePointOutputPath = `${config.sharePoint.paths.outputFolder}/${day}/${outputFileName}`;
@@ -247,6 +282,7 @@ export async function runLabelJob({
       sharePointOutputPath,
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     );
+    sharePointReportPath = `${config.sharePoint.paths.outputFolder}/${day}/${reportFileName}`;
   }
 
   const run = {
@@ -262,6 +298,17 @@ export async function runLabelJob({
     sharePointWebUrl: sharePointOutput?.webUrl || ''
   };
 
+  const emailReport = buildEmailReport(run);
+  await fs.writeFile(reportPath, emailReport.text, 'utf8');
+
+  if (sharePointClient.enabled && sharePointReportPath) {
+    sharePointReport = await sharePointClient.uploadFile(
+      reportPath,
+      sharePointReportPath,
+      'text/plain; charset=utf-8'
+    );
+  }
+
   const runLogPath = await appendRunLog({ run, config, sharePointClient });
 
   return {
@@ -271,9 +318,13 @@ export async function runLabelJob({
     articleNumber: spec.articleNumber,
     legalProduct: spec.legalProduct,
     outputPath,
+    reportPath,
     sharePointOutputPath,
     sharePointWebUrl: sharePointOutput?.webUrl || '',
+    sharePointReportPath,
+    sharePointReportWebUrl: sharePointReport?.webUrl || '',
     runLogPath,
+    emailReport,
     reviewRequired: reviewItems.length > 0,
     reviewItems,
     extracted: {

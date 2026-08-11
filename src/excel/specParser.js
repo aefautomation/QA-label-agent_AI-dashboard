@@ -1,5 +1,6 @@
 import { readWorkbook, sheetRows } from './workbook.js';
 import { isMeaningful, normalizeText } from '../utils/normalize.js';
+import { splitIngredientDeclarationAndWarnings } from '../translation/ingredientDeclaration.js';
 
 const BASIC_SHEET = '2. BASIC';
 
@@ -23,6 +24,27 @@ function findRow(rows, matchers, start = 0) {
     }
   }
   return -1;
+}
+
+function firstCellMatching(rows, pattern) {
+  for (const row of rows) {
+    for (const cell of row) {
+      const value = cleanCell(cell);
+      if (pattern.test(value)) return value;
+    }
+  }
+  return '';
+}
+
+function dateFromFilename(filePath) {
+  const fileName = String(filePath || '').split(/[\\/]/).pop() || '';
+  const ymd = fileName.match(/\b(20\d{2})(\d{2})(\d{2})\b/);
+  if (ymd) return `${ymd[1]}-${ymd[2]}-${ymd[3]}`;
+
+  const dmy = fileName.match(/\b(\d{2})(\d{2})(20\d{2})\b/);
+  if (dmy) return `${dmy[3]}-${dmy[2]}-${dmy[1]}`;
+
+  return '';
 }
 
 function valueRightOfLabel(rows, labelMatchers, options = {}) {
@@ -68,29 +90,45 @@ function valueOnRow(rows, rowIndex, label, preferredValueCols = []) {
   return '';
 }
 
-function nutritionValue(rows, label) {
+function cellAt(rows, rowIndex, colIndex) {
+  if (rowIndex < 0 || rowIndex >= rows.length) return '';
+  return cleanCell(rows[rowIndex]?.[colIndex]);
+}
+
+function findNutritionLabelRow(rows, label) {
   const nutritionStart = findRow(rows, 'NUTRITIONAL VALUE');
   const labelNorm = normalizeText(label);
-  let rowIndex = -1;
   for (let r = Math.max(0, nutritionStart); r < rows.length; r += 1) {
-    if (normalizeText(rows[r][2]) === labelNorm) {
-      rowIndex = r;
-      break;
-    }
+    const labelCol = rows[r].findIndex((cell, col) => col <= 3 && normalizeText(cell) === labelNorm);
+    if (labelCol !== -1) return { rowIndex: r, labelCol };
     if (r > nutritionStart && normalizeText(rowText(rows[r])).includes('storage advice')) break;
   }
-  return valueOnRow(rows, rowIndex, label, [4, 5, 9, 10]);
+  return { rowIndex: -1, labelCol: -1 };
+}
+
+function firstNumericRightOf(row, startCol) {
+  for (let c = startCol + 1; c < Math.min(row.length, startCol + 8); c += 1) {
+    const value = cleanCell(row[c]);
+    if (/^-?\d+(?:[.,]\d+)?$/.test(value)) return { value, col: c };
+  }
+  return { value: '', col: -1 };
+}
+
+function nutritionValue(rows, label) {
+  const { rowIndex, labelCol } = findNutritionLabelRow(rows, label);
+  if (rowIndex === -1) return '';
+  return firstNumericRightOf(rows[rowIndex], labelCol).value;
 }
 
 function energyValues(rows) {
-  const nutritionStart = findRow(rows, 'NUTRITIONAL VALUE');
-  const energyRow = findRow(rows, 'Energy', Math.max(0, nutritionStart));
+  const { rowIndex: energyRow, labelCol } = findNutritionLabelRow(rows, 'Energy');
   if (energyRow === -1) return { kj: '', kcal: '' };
 
-  const kj = valueOnRow(rows, energyRow, 'Energy', [4, 5]);
+  const kjResult = firstNumericRightOf(rows[energyRow], labelCol);
+  const kj = kjResult.value;
   let kcal = '';
   for (let r = energyRow + 1; r < Math.min(rows.length, energyRow + 3); r += 1) {
-    const candidate = valueOnRow(rows, r, '', [4, 5]);
+    const candidate = kjResult.col === -1 ? firstNumericRightOf(rows[r], labelCol).value : cleanCell(rows[r][kjResult.col]);
     const unit = rowText(rows[r]);
     if (candidate && /kcal/i.test(unit)) {
       kcal = candidate;
@@ -206,8 +244,13 @@ export function parseSpecification(specPath) {
   const rows = sheetRows(workbook, BASIC_SHEET);
 
   const energy = energyValues(rows);
+  const rawIngredientsDeclaration = valueRightOfLabel(rows, 'INGREDIENT DECLARATION', { maxOffset: 12 });
+  const ingredientParts = splitIngredientDeclarationAndWarnings(rawIngredientsDeclaration);
+  const specWarning = valueRightOfLabel(rows, 'Warning (if applicable)', { maxOffset: 10 });
   const spec = {
     sourceFile: specPath,
+    specificationVersion: firstCellMatching(rows, /AEF Version/i),
+    specificationVersionDate: dateFromFilename(specPath),
     supplierNumber: valueRightOfLabel(rows, 'SUPPLIER NUMBER'),
     articleNumber: valueRightOfLabel(rows, 'ARTICLE NUMBER ASIA EXPRESS'),
     supplierName: valueRightOfLabel(rows, 'SUPPLIER NAME'),
@@ -216,7 +259,7 @@ export function parseSpecification(specPath) {
     legalProduct: valueRightOfLabel(rows, 'LEGAL PRODUCT'),
     description: valueRightOfLabel(rows, 'DESCRIPTION'),
     countryOfProduction: valueRightOfLabel(rows, 'COUNTRY OF PRODUCTION'),
-    ingredientsDeclaration: valueRightOfLabel(rows, 'INGREDIENT DECLARATION', { maxOffset: 12 }),
+    ingredientsDeclaration: ingredientParts.ingredients,
     nutrition: {
       energyKj: energy.kj,
       energyKcal: energy.kcal,
@@ -234,7 +277,7 @@ export function parseSpecification(specPath) {
       expirationExample: valueRightOfLabel(rows, 'Example notation expiration date'),
       lotBatchCode: valueRightOfLabel(rows, 'Lot/Batch/Production number'),
       directionForUse: valueRightOfLabel(rows, 'Direction for use', { maxOffset: 10 }),
-      warning: valueRightOfLabel(rows, 'Warning (if applicable)', { maxOffset: 10 }),
+      warning: [specWarning, ingredientParts.warnings].filter(isMeaningful).join(' '),
       unopenedTemperature: valueRightOfLabel(rows, 'Storage temperature (unopened)'),
       unopenedAdvice: valueRightOfLabel(rows, 'Storage advice (unopened)'),
       afterOpeningTemperature: valueRightOfLabel(rows, 'Storage temperature (after opening)'),
@@ -256,10 +299,12 @@ export function parseSpecification(specPath) {
     },
     logistics: {
       ean: '',
+      outerCartonEan: '',
       netWeight: '',
       netContentMl: '',
       drainedWeight: '',
-      grossWeight: ''
+      grossWeight: '',
+      outerCartonQuantity: ''
     },
     additives: collectAdditives(rows),
     allergens: allergenRows(rows),
@@ -275,11 +320,14 @@ export function parseSpecification(specPath) {
   const logisticStart = findRow(rows, 'Logistical information');
   if (logisticStart !== -1) {
     const singleRow = findRow(rows, 'Single Unit', logisticStart);
-    spec.logistics.ean = valueOnRow(rows, singleRow, 'Single Unit', [3]);
-    spec.logistics.netWeight = valueOnRow(rows, singleRow, 'Single Unit', [8]);
-    spec.logistics.netContentMl = valueOnRow(rows, singleRow, 'Single Unit', [9]);
-    spec.logistics.drainedWeight = valueOnRow(rows, singleRow, 'Single Unit', [10]);
-    spec.logistics.grossWeight = valueOnRow(rows, singleRow, 'Single Unit', [11]);
+    const handlingRow = findRow(rows, 'Handling unit', logisticStart);
+    spec.logistics.ean = cellAt(rows, singleRow, 3);
+    spec.logistics.outerCartonEan = cellAt(rows, handlingRow, 3);
+    spec.logistics.netWeight = cellAt(rows, singleRow, 8);
+    spec.logistics.netContentMl = cellAt(rows, singleRow, 9);
+    spec.logistics.drainedWeight = cellAt(rows, singleRow, 10);
+    spec.logistics.grossWeight = cellAt(rows, singleRow, 11);
+    spec.logistics.outerCartonQuantity = valueRightOfLabel(rows, 'Number of products in outer carton', { start: logisticStart, maxOffset: 8 });
   }
 
   spec.isFrozen = inferFrozen(spec);

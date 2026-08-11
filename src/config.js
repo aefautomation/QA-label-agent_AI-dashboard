@@ -28,6 +28,15 @@ export function boolEnv(name, fallback = false) {
   return ['1', 'true', 'yes', 'ja', 'on'].includes(value.toLowerCase());
 }
 
+function decodeMaybe(value) {
+  const text = env(value);
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
 export function getConfig() {
   return {
     port: Number(env('PORT', '3000')),
@@ -38,7 +47,11 @@ export function getConfig() {
     openai: {
       apiKey: env('OPENAI_API_KEY'),
       model: env('OPENAI_MODEL', 'gpt-5-mini'),
-      enableWebSearch: boolEnv('OPENAI_ENABLE_WEB_SEARCH', true)
+      reviewModel: env('OPENAI_REVIEW_MODEL'),
+      enableModelEscalation: boolEnv('OPENAI_ENABLE_MODEL_ESCALATION', true),
+      enableFallback: boolEnv('OPENAI_ENABLE_FALLBACK', true),
+      enableWebSearch: boolEnv('OPENAI_ENABLE_WEB_SEARCH', true),
+      timeoutMs: Number(env('OPENAI_TIMEOUT_MS', '60000'))
     },
     local: {
       translationDbPath: env('LOCAL_TRANSLATION_DB_PATH'),
@@ -55,8 +68,8 @@ export function getConfig() {
       siteId: env('SHAREPOINT_SITE_ID'),
       driveId: env('SHAREPOINT_DRIVE_ID'),
       teams: {
-        teamId: env('TEAMS_TEAM_ID'),
-        channelId: env('TEAMS_CHANNEL_ID')
+        teamId: decodeMaybe('TEAMS_TEAM_ID'),
+        channelId: decodeMaybe('TEAMS_CHANNEL_ID')
       },
       paths: {
         translationDb: env('SP_TRANSLATION_DB_PATH'),

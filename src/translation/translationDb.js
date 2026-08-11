@@ -18,10 +18,23 @@ const LANGUAGE_HEADER_ALIASES = {
   SK: ['sk', 'slowaaks', 'slowaaks sk', 'slowaaks (sk)', 'slovak']
 };
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function headerMatchesAlias(normalizedHeader, alias) {
+  const normalizedAlias = normalizeText(alias).replace(/\s+/g, ' ');
+  if (normalizedHeader === normalizedAlias) return true;
+  if (normalizedAlias.length <= 2) {
+    return new RegExp(`(^|[^a-z])${escapeRegExp(normalizedAlias)}([^a-z]|$)`).test(normalizedHeader);
+  }
+  return normalizedHeader.includes(normalizedAlias);
+}
+
 function headerToLanguageCode(headerValue) {
   const normalized = normalizeText(headerValue).replace(/\s+/g, ' ');
   for (const [code, aliases] of Object.entries(LANGUAGE_HEADER_ALIASES)) {
-    if (aliases.some((alias) => normalized === normalizeText(alias) || normalized.includes(normalizeText(alias)))) {
+    if (aliases.some((alias) => headerMatchesAlias(normalized, alias))) {
       return code;
     }
   }
@@ -44,6 +57,30 @@ function rowToTranslations(row, columns) {
     translations[language.code] = col == null ? '' : String(row[col] ?? '').trim();
   }
   return translations;
+}
+
+function lookupVariants(text) {
+  const raw = String(text ?? '').trim();
+  const variants = new Set([raw]);
+  if (!raw) return [];
+
+  variants.add(raw.replace(/^ingredients:\s*/i, '').trim());
+  variants.add(raw.replace(/\bsoy\b/gi, 'SOYA'));
+  variants.add(raw.replace(/\bsoybean(s)?\b/gi, 'SOYA bean$1'));
+  variants.add(raw.replace(/\bstabilizer(s)?\b/gi, 'stabiliser$1'));
+  variants.add(raw.replace(/\bcolor(s)?\b/gi, 'colour$1'));
+  variants.add(raw.replace(/\bflavoring(s)?\b/gi, 'flavouring$1'));
+  variants.add(raw.replace(/\bflavor(s)?\b/gi, 'flavour$1'));
+  variants.add(raw.replace(/\bhydrolyzed\b/gi, 'hydrolysed'));
+
+  if (/s$/i.test(raw) && raw.length > 3) variants.add(raw.replace(/s$/i, ''));
+  if (/ies$/i.test(raw)) variants.add(raw.replace(/ies$/i, 'y'));
+
+  return Array.from(variants).filter(Boolean);
+}
+
+function sheetPriority(sheetName) {
+  return normalizeText(sheetName) === 'data' ? 0 : 10;
 }
 
 export function loadTranslationDb(filePath) {
@@ -69,19 +106,23 @@ export function loadTranslationDb(filePath) {
       const translations = rowToTranslations(row, columns);
       translations.EN ||= english;
       const key = compactKey(english);
-      if (!key || entries.has(key)) continue;
+      if (!key) continue;
 
-      entries.set(key, {
+      const nextEntry = {
         key,
         english,
         translations,
+        priority: sheetPriority(sheetName),
         source: {
           workbook: filePath,
           sheet: sheetName,
           row: r + 1,
           category: String(row[0] ?? '').trim()
         }
-      });
+      };
+
+      const existing = entries.get(key);
+      if (!existing || nextEntry.priority > (existing.priority || 0)) entries.set(key, nextEntry);
     }
   }
 
@@ -90,8 +131,12 @@ export function loadTranslationDb(filePath) {
     entries,
     diagnostics,
     lookup(text) {
-      const key = compactKey(text);
-      return entries.get(key) || null;
+      for (const variant of lookupVariants(text)) {
+        const key = compactKey(variant);
+        const hit = entries.get(key);
+        if (hit) return hit;
+      }
+      return null;
     },
     lookupMany(candidates) {
       for (const candidate of candidates) {
@@ -99,6 +144,11 @@ export function loadTranslationDb(filePath) {
         if (hit) return hit;
       }
       return null;
+    },
+    entryList() {
+      return Array.from(entries.values())
+        .filter((entry) => isMeaningful(entry.english))
+        .sort((a, b) => b.english.length - a.english.length);
     }
   };
 }
