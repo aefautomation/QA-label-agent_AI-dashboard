@@ -4,7 +4,7 @@ import multer from 'multer';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getConfig } from './config.js';
-import { runLabelJob } from './labelAgent.js';
+import { makeRunId, runLabelJob } from './labelAgent.js';
 
 const config = getConfig();
 const upload = multer({
@@ -19,6 +19,8 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use('/outputs', express.static(config.outputRoot));
+
+const jobs = new Map();
 
 function requireAuth(req, res, next) {
   if (!config.webhookSecret) return next();
@@ -44,6 +46,85 @@ function publicDownloadUrl(filePath) {
   return `${config.publicBaseUrl.replace(/\/+$/g, '')}/outputs/${relative.split('/').map(encodeURIComponent).join('/')}`;
 }
 
+function publicEndpoint(pathname) {
+  if (!config.publicBaseUrl) return pathname;
+  return `${config.publicBaseUrl.replace(/\/+$/g, '')}${pathname}`;
+}
+
+function responseResult(result) {
+  return {
+    ...result,
+    downloadUrl: publicDownloadUrl(result.outputPath),
+    reportDownloadUrl: publicDownloadUrl(result.reportPath)
+  };
+}
+
+function isAsyncRequest(req) {
+  const value = req.query.async ?? req.body?.async ?? req.body?.responseMode;
+  return ['1', 'true', 'yes', 'ja', 'async'].includes(String(value || '').toLowerCase());
+}
+
+async function writeJobState(job) {
+  const jobDir = path.join(config.outputRoot, 'jobs');
+  await fs.mkdir(jobDir, { recursive: true });
+  await fs.writeFile(path.join(jobDir, `${job.runId}.json`), JSON.stringify(job, null, 2), 'utf8');
+}
+
+async function persistJobState(job) {
+  try {
+    await writeJobState(job);
+  } catch (error) {
+    console.error('Job-status opslaan mislukt:', error);
+  }
+}
+
+async function readJobState(runId) {
+  const cached = jobs.get(runId);
+  if (cached) return cached;
+
+  try {
+    const filePath = path.join(config.outputRoot, 'jobs', `${runId}.json`);
+    const job = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    jobs.set(runId, job);
+    return job;
+  } catch {
+    return null;
+  }
+}
+
+function startAsyncLabelJob({ runId, jobArgs }) {
+  const job = {
+    runId,
+    status: 'processing',
+    createdAt: new Date().toISOString(),
+    startedAt: new Date().toISOString(),
+    completedAt: '',
+    failedAt: '',
+    error: '',
+    result: null
+  };
+
+  jobs.set(runId, job);
+  void persistJobState(job);
+
+  runLabelJob({ ...jobArgs, runId })
+    .then(async (result) => {
+      job.status = 'completed';
+      job.completedAt = new Date().toISOString();
+      job.result = responseResult(result);
+      jobs.set(runId, job);
+      await persistJobState(job);
+    })
+    .catch(async (error) => {
+      console.error(error);
+      job.status = 'failed';
+      job.failedAt = new Date().toISOString();
+      job.error = error.message || 'Onbekende fout';
+      jobs.set(runId, job);
+      await persistJobState(job);
+    });
+}
+
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
@@ -54,33 +135,78 @@ app.get('/health', (_req, res) => {
   });
 });
 
+app.get('/labels/:runId', requireAuth, async (req, res) => {
+  const job = await readJobState(req.params.runId);
+  if (!job) {
+    return res.status(404).json({
+      status: 'not_found',
+      runId: req.params.runId,
+      error: 'Run niet gevonden. Mogelijk is de Railway container herstart voordat de job klaar was.'
+    });
+  }
+
+  if (job.status === 'completed') {
+    return res.json({
+      status: job.status,
+      runId: job.runId,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      ...job.result
+    });
+  }
+
+  return res.status(job.status === 'failed' ? 500 : 202).json({
+    status: job.status,
+    runId: job.runId,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+    failedAt: job.failedAt,
+    error: job.error,
+    pollAfterSeconds: 20,
+    statusUrl: publicEndpoint(`/labels/${job.runId}`)
+  });
+});
+
 app.post('/labels', requireAuth, upload.any(), async (req, res, next) => {
   try {
     await fs.mkdir(config.tmpRoot, { recursive: true });
     const specFile = pickSpecFile(req.files);
     const sharePointSpecPath = req.body.sharePointSpecPath || req.body.specSharePointPath || '';
-
-    const result = await runLabelJob({
+    const source = {
+      kind: sharePointSpecPath ? 'sharepoint' : 'multipart',
+      originalFileName: specFile?.originalname || '',
+      emailSubject: req.body.emailSubject || req.body.subject || '',
+      makeScenarioId: req.body.scenarioId || ''
+    };
+    const jobArgs = {
       specPath: specFile?.path,
       sharePointSpecPath,
-      source: {
-        kind: sharePointSpecPath ? 'sharepoint' : 'multipart',
-        originalFileName: specFile?.originalname || '',
-        emailSubject: req.body.emailSubject || req.body.subject || '',
-        makeScenarioId: req.body.scenarioId || ''
-      },
+      source,
       config
+    };
+
+    if (isAsyncRequest(req)) {
+      const runId = makeRunId();
+      startAsyncLabelJob({ runId, jobArgs });
+      return res.status(202).json({
+        status: 'processing',
+        runId,
+        pollAfterSeconds: 20,
+        statusUrl: publicEndpoint(`/labels/${runId}`)
+      });
+    }
+
+    const result = await runLabelJob({
+      ...jobArgs
     });
 
     if (req.query.response === 'docx') {
       return res.download(result.outputPath);
     }
 
-    return res.json({
-      ...result,
-      downloadUrl: publicDownloadUrl(result.outputPath),
-      reportDownloadUrl: publicDownloadUrl(result.reportPath)
-    });
+    return res.json(responseResult(result));
   } catch (error) {
     return next(error);
   }

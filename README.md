@@ -126,7 +126,7 @@ GET /health
 Multipart upload:
 
 ```http
-POST /labels
+POST /labels?async=true
 Authorization: Bearer <MAKE_WEBHOOK_SECRET>
 Content-Type: multipart/form-data
 
@@ -136,7 +136,7 @@ spec=<xlsx file>
 JSON met SharePoint-pad:
 
 ```http
-POST /labels
+POST /labels?async=true
 Authorization: Bearer <MAKE_WEBHOOK_SECRET>
 Content-Type: application/json
 
@@ -146,10 +146,29 @@ Content-Type: application/json
 }
 ```
 
-De response is JSON met `runId`, gekozen sjabloon, reviewstatus, SharePoint-outputpad en een kant-en-klare mailrapportage:
+Met `async=true` reageert de agent direct met een jobstatus:
 
 ```json
 {
+  "status": "processing",
+  "runId": "20260811121245-69gxbv",
+  "pollAfterSeconds": 20,
+  "statusUrl": "https://.../labels/20260811121245-69gxbv"
+}
+```
+
+Poll daarna:
+
+```http
+GET /labels/{runId}
+Authorization: Bearer <MAKE_WEBHOOK_SECRET>
+```
+
+Zodra `status` `completed` is, bevat de response het gekozen sjabloon, reviewstatus, SharePoint-outputpad en een kant-en-klare mailrapportage:
+
+```json
+{
+  "status": "completed",
   "emailReport": {
     "subject": "Label DV7837-01 - review nodig",
     "text": "platte tekst voor Make mailbody",
@@ -181,11 +200,15 @@ Aanbevolen flow:
 
 1. Mailhook ontvangt mail met productspecificatie.
 2. Make uploadt de spec naar `Input/` in het Teams-kanaal, of stuurt hem direct multipart door.
-3. Make roept `POST /labels` aan.
-4. Make leest `emailReport.subject` en `emailReport.html` of `emailReport.text` uit de JSON-response voor de mail.
-5. Make gebruikt `sharePointWebUrl` of `downloadUrl` voor het gemaakte Word-label.
-6. Optioneel: voeg `sharePointReportWebUrl` of `reportDownloadUrl` toe als extra bijlage/link.
-7. Bij `reviewRequired=true`: stuur naar QA/human check.
+3. Make roept `POST /labels?async=true` aan.
+4. Make krijgt direct `runId` en `statusUrl` terug.
+5. Make wacht bijvoorbeeld 20-30 seconden.
+6. Make roept `GET /labels/{runId}` aan.
+7. Als `status=processing`: wacht opnieuw en poll nogmaals.
+8. Als `status=completed`: Make leest `emailReport.subject` en `emailReport.html` of `emailReport.text` uit de JSON-response voor de mail.
+9. Make gebruikt `sharePointWebUrl` of `downloadUrl` voor het gemaakte Word-label.
+10. Optioneel: voeg `sharePointReportWebUrl` of `reportDownloadUrl` toe als extra bijlage/link.
+11. Bij `reviewRequired=true`: stuur naar QA/human check.
 
 ## Belangrijke compliance-regel
 

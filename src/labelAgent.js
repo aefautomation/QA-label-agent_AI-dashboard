@@ -11,7 +11,7 @@ import { SharePointClient } from './sharepoint/graphClient.js';
 import { appendRunLog } from './runLog.js';
 import { isMeaningful, safeFilePart } from './utils/normalize.js';
 
-function makeRunId() {
+export function makeRunId() {
   const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
   const random = Math.random().toString(36).slice(2, 8);
   return `${stamp}-${random}`;
@@ -220,9 +220,10 @@ export async function runLabelJob({
   sharePointSpecPath,
   source = {},
   outputRoot,
-  config = getConfig()
+  config = getConfig(),
+  runId: providedRunId
 }) {
-  const runId = makeRunId();
+  const runId = providedRunId || makeRunId();
   const timestamp = new Date().toISOString();
   const root = outputRoot || config.outputRoot;
   const runDir = path.join(root, runId);
