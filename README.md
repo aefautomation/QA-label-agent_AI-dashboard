@@ -1,25 +1,40 @@
 # Label Agent
 
-HTTP-agent voor Make/Railway die uit productspecificaties een meertalig labeldocument maakt. De agent draait SharePoint-only: templates, vertalingendatabase, output en run-log komen uit of gaan naar de Teams/SharePoint kanaalmap.
+Deze Label Agent is opgezet om vanuit Make automatisch een meertalig food-label te maken op basis van een productspecificatie. De agent draait op Railway als Node.js HTTP-service en gebruikt de Teams/SharePoint-kanaalmap als centrale bron voor de sjablonen, vertalingendatabase, inputbestanden, outputbestanden en run-log.
 
-## Werkwijze
+Belangrijk uitgangspunt: SharePoint is de bron van waarheid. Er worden geen lokale templates of lokale vertalingen gebruikt in productie. Als QA een vertaling aanpast in de Excel in Teams, gebruikt de agent die aangepaste versie direct bij de volgende run.
 
-1. Make ontvangt een mail via mailhook en stuurt de productspecificatie door naar `POST /labels`.
-2. De agent leest sheet `2. BASIC` uit de specificatie.
-3. De agent kiest het juiste Word-sjabloon:
-   - normaal
-   - diepvries
-   - diepvries + visserijproduct
-4. Vertalingen komen eerst uit `Labels_13_talen.xlsx`.
-5. Ontbrekende vertalingen gaan via OpenAI fallback. Het standaardmodel wordt gebruikt voor normale gevallen; een optioneel reviewmodel wordt alleen gebruikt voor juridisch gevoeligere fallbackgevallen.
-6. Tekst buiten de vertalingendatabase wordt rood in het Word-document gezet en komt in het reviewrapport.
-7. Output en run-log worden teruggeschreven naar SharePoint.
+## Korte Samenvatting Voor IT
 
-## Teams/SharePoint mappen
+De technische keten is als volgt:
 
-Gebruik het Teams-kanaal als bron van waarheid. Bestanden die in een Teams-kanaal staan worden door Microsoft in de gekoppelde SharePoint-map van dat kanaal opgeslagen. De agent kan die kanaalmap direct via Microsoft Graph gebruiken.
+1. Een mail komt binnen in Make via een mailhook.
+2. Make stuurt de productspecificatie naar de Railway endpoint `POST /labels?async=true`.
+3. Railway start een label-run en geeft direct een `runId` en `statusUrl` terug.
+4. De agent haalt de actuele bestanden op uit de Teams/SharePoint-kanaalmap.
+5. De agent leest sheet `2. BASIC` uit de productspecificatie.
+6. De agent bepaalt automatisch welk Word-sjabloon nodig is: normaal, diepvries of diepvries visserijproduct.
+7. De agent gebruikt `Labels_13_talen.xlsx` als goedgekeurde vertalingendatabase.
+8. Alleen als een term of tekst niet betrouwbaar in de database staat, gebruikt de agent OpenAI als fallback/researchlaag.
+9. In het Word-label wordt automatisch ingevulde en vertrouwde tekst groen gemarkeerd.
+10. Alles wat niet betrouwbaar uit de vertalingendatabase komt, wordt rood gemarkeerd en komt in de rapportage voor menselijke QA-controle.
+11. Het gemaakte Word-label, een korte rapportage en de run-log worden opgeslagen in SharePoint.
+12. Make pollt de `statusUrl` totdat de run klaar is en gebruikt daarna de SharePoint-link en rapportage in de mail.
 
-Zet in het kanaal `Automatisering` deze structuur:
+## Architectuur
+
+De oplossing bestaat uit vier hoofdonderdelen:
+
+- Make: ontvangt de e-mail, stuurt de specificatie naar de agent, pollt de status en verstuurt de uiteindelijke e-mail.
+- Railway: host de Node.js service die de API endpoints aanbiedt en de label-run uitvoert.
+- Teams/SharePoint: bewaart alle bronbestanden en outputbestanden.
+- OpenAI: wordt alleen gebruikt als fallback wanneer de eigen vertalingendatabase geen betrouwbare match heeft.
+
+De agent gebruikt Microsoft Graph met app-only credentials om bestanden uit de Teams/SharePoint-map te downloaden en nieuwe bestanden terug te uploaden.
+
+## Teams/SharePoint Structuur
+
+In het Teams-kanaal `Automatisering` staat de bestandenmap. De agent gebruikt deze map via Microsoft Graph. De gewenste structuur is:
 
 ```text
 Templates/
@@ -34,89 +49,103 @@ Run log/
   label-agent-runs.xlsx
 ```
 
-De Excel met vertalingen en de sjablonen blijven gewone bewerkbare Office-bestanden. De agent downloadt bij elke run de actuele versies uit de Teams-kanaalmap, dus wijzigingen zijn meteen actief zonder redeploy. Lokale template- of databasepaden worden niet meer ondersteund.
+De bestanden blijven normale Office-bestanden. QA kan dus de vertalingendatabase aanpassen in Excel en marketing/QA kan de Word-sjablonen aanpassen in Word. Zolang de bestandsnamen of de ingestelde SharePoint-paden gelijk blijven, hoeft de agent niet opnieuw gedeployd te worden.
 
-### Teams channel mode
+## Exacte Volgorde Per Run
 
-Stel deze variabelen in Railway in:
+1. Make ontvangt een e-mail met een productspecificatie als bijlage.
+2. Make doet een HTTP `POST` naar `/labels?async=true`.
+3. De agent controleert de autorisatie met `MAKE_WEBHOOK_SECRET`.
+4. De agent maakt een uniek `runId`, bijvoorbeeld `20260811121245-69gxbv`.
+5. De API reageert direct met `status=processing`, `runId`, `pollAfterSeconds` en `statusUrl`.
+6. De echte verwerking loopt daarna op de achtergrond door in Railway.
+7. Als Make de specificatie multipart meestuurt, uploadt de agent deze eerst naar `Input/YYYY-MM-DD/` in SharePoint.
+8. Als Make een `sharePointSpecPath` meestuurt, downloadt de agent dat bestand direct uit SharePoint.
+9. De agent leest de Excel-specificatie en zoekt daarin sheet `2. BASIC`.
+10. De parser haalt artikelnummer, naam, herkomst, ingredienten, allergenen, voedingswaarden, gewicht, opslagteksten, EAN en eventuele visserijgegevens uit de spec.
+11. De parser bepaalt op basis van de inhoud of het om normaal, diepvries of diepvries visserijproduct gaat.
+12. De agent downloadt de actuele `Labels_13_talen.xlsx` uit `Database/`.
+13. De agent downloadt het juiste Word-sjabloon uit `Templates/`.
+14. De agent zoekt per tekstveld eerst naar een match in de vertalingendatabase.
+15. Bij ingredientendeclaraties werkt dit op termniveau: bekende termen zoals `water` worden groen/trusted verwerkt, terwijl onbekende delen rood blijven.
+16. Als een volledige tekst of term niet betrouwbaar in de database staat, gaat die naar OpenAI fallback.
+17. OpenAI krijgt geen volledige SharePoint-map en geen Word-template als bestand. OpenAI krijgt alleen de relevante tekstvelden, productcontext, bekende database-terminologie en onbekende termen.
+18. De agent vult het Word-sjabloon met de gevonden waarden en vertalingen.
+19. De agent markeert automatisch ingevulde/trusted output groen en reviewplichtige output rood.
+20. De agent maakt daarnaast een korte rapportage voor Make met onderwerp, tekstversie en HTML-versie.
+21. Het Word-label wordt geupload naar `Output/YYYY-MM-DD/` in SharePoint.
+22. De rapportage wordt als `.txt` opgeslagen in dezelfde outputmap.
+23. De agent voegt een regel toe aan `Run log/label-agent-runs.xlsx`.
+24. Make pollt `GET /labels/{runId}` totdat de status `completed` is.
+25. Make gebruikt daarna `sharePointWebUrl` voor het label en `emailReport.html` of `emailReport.text` voor de e-mail.
 
-- `TEAMS_TEAM_ID`
-- `TEAMS_CHANNEL_ID`
+## Hoe Flexibel De Specificatie Wordt Gelezen
 
-Deze IDs kun je ophalen via Microsoft Graph:
+De agent leest niet alleen vaste cellen zoals "B12" of "C18". De parser in `src/excel/specParser.js` zoekt naar herkenbare labels, tekstblokken en waarden rond de relevante onderdelen van sheet `2. BASIC`. Daardoor kan de agent kleine verschuivingen in de Excel meestal opvangen.
 
-```http
-GET /teams/{team-id}/channels
-GET /teams/{team-id}/channels/{channel-id}/filesFolder
-```
+Bewust gekozen voor een hybride aanpak:
 
-De tweede call geeft de echte SharePoint-map terug die Teams gebruikt voor de kanaalbestanden.
+- Objectieve velden zoals artikelnummer, gewicht, EAN en voedingswaarden worden door code uit de Excel gehaald, omdat dit traceerbaar en controleerbaar moet blijven.
+- Taalvelden en juridisch gevoelige vertalingen worden eerst tegen de eigen database gecontroleerd.
+- AI wordt gebruikt waar flexibiliteit nodig is, maar alleen als fallback en altijd met reviewmarkering.
 
-Als deze twee waarden zijn gezet, zijn alle `SP_*` paden relatief aan de bestandenmap van dat kanaal:
+Als een specificatie sterk afwijkt van de bekende structuur, kan de parser alsnog iets missen. In dat geval komt dit als QA-waarschuwing of reviewpunt terug in de output en run-log.
 
-```env
-SP_TRANSLATION_DB_PATH=Database/Labels_13_talen.xlsx
-SP_TEMPLATE_NORMAL_PATH=Templates/BI09-....docx
-SP_TEMPLATE_FROZEN_PATH=Templates/BI13-....docx
-SP_TEMPLATE_FISHERY_FROZEN_PATH=Templates/BI53-....docx
-SP_INPUT_FOLDER=Input
-SP_OUTPUT_FOLDER=Output
-SP_RUN_LOG_PATH=Run log/label-agent-runs.xlsx
-```
+## Vertalingen En OpenAI
 
-Zonder `TEAMS_TEAM_ID` en `TEAMS_CHANNEL_ID` gebruikt de agent de SharePoint document library root zoals eerder.
+`Labels_13_talen.xlsx` is de leidende database. Alles wat daar goed in staat, beschouwen we als goedgekeurde terminologie.
 
-### OpenAI modellen
+De agent gebruikt OpenAI alleen wanneer:
 
-De agent gebruikt OpenAI alleen als fallback wanneer een tekst niet betrouwbaar uit `Labels_13_talen.xlsx` komt.
+- een productnaam of wettelijke benaming geen databasehit heeft;
+- een waarschuwing of gebruikstekst geen databasehit heeft;
+- een ingredientendeclaratie onbekende termen bevat;
+- visserijvelden zoals vangstgebied, productiemethode of vangstmethode niet in de database staan.
 
-```env
-OPENAI_MODEL=gpt-5-mini
-OPENAI_REVIEW_MODEL=gpt-5
-OPENAI_ENABLE_MODEL_ESCALATION=true
-```
+Voor ingredientendeclaraties stuurt de agent ook de bekende termen uit de database mee als verplichte terminologie. De bedoeling is dat OpenAI niet vrij gaat "mooie vertalingen" maken, maar juridisch conservatieve labelbenamingen voorstelt. Als `OPENAI_ENABLE_WEB_SEARCH=true` staat, mag de fallback ook web search gebruiken binnen de ingestelde OpenAI tooling.
 
-`OPENAI_MODEL` is het standaardmodel. `OPENAI_REVIEW_MODEL` wordt alleen gebruikt bij:
+Alle OpenAI-output blijft reviewplichtig. Ook als de vertaling goed lijkt, wordt deze rood in het document gezet totdat QA dit gecontroleerd heeft en eventueel toevoegt aan de vertalingendatabase.
 
-- ingredientendeclaraties met onbekende termen
-- productnaam/wettelijke benaming zonder databasehit
-- waarschuwingen zonder databasehit
-- visserijvelden zonder databasehit
+## Kleurcodering In Het Label
 
-Als `OPENAI_REVIEW_MODEL` leeg is, gebruikt de agent altijd `OPENAI_MODEL`. Alle fallback-output blijft reviewplichtig en rood in het Word-document.
+De kleurcodering is bedoeld om QA snel te laten zien wat automatisch is gedaan en wat extra controle nodig heeft.
 
-### Bewerken door QA/marketing
+- Groen: automatisch ingevulde waarden of termen/vertalingen uit `Labels_13_talen.xlsx`.
+- Rood: tekst die niet betrouwbaar uit `Labels_13_talen.xlsx` komt, bijvoorbeeld OpenAI fallback, onbekende ingredientdelen of manual-required tekst.
+- Ongemarkeerd: vaste tekst die al in het Word-sjabloon stond en niet door de agent is vervangen.
 
-- Pas vertalingen alleen aan in `Database/Labels_13_talen.xlsx` in het Teams-kanaal.
-- Pas layout, vaste labelteksten en taalvolgorde aan in de `.docx` bestanden onder `Templates/`.
-- Laat bestandsnamen gelijk, of pas de bijbehorende `SP_TEMPLATE_*` environment variable aan.
-- De agent wijzigt de template/databasebestanden niet; hij maakt per run een nieuw output-document.
+Bij ingredientendeclaraties gebeurt de markering per herkende term. Daardoor kan in een rode ingredientenregel alsnog bijvoorbeeld `water`, `sugar` of een andere bekende term groen zijn als die in de database staat.
 
-### Run-log
+## Output En Run-Log
 
-De agent maakt of werkt `Run log/label-agent-runs.xlsx` bij met:
+Per run maakt de agent drie soorten output in SharePoint:
 
-- run ID en timestamp
-- bronbestand / mailonderwerp
-- artikelnummer, leverancier, merk en wettelijke productnaam
-- gekozen sjabloon
-- SharePoint-outputpad
-- reviewstatus
-- aantal databasehits versus fallback-vertalingen
-- gebruikte OpenAI modellen en aantal reviewmodel-escalaties
-- QA-waarschuwingen als JSON
+- Het ingevulde Word-label in `Output/YYYY-MM-DD/`.
+- Een korte tekstuele rapportage in `Output/YYYY-MM-DD/`.
+- Een nieuwe regel in `Run log/label-agent-runs.xlsx`.
+
+De run-log bevat onder andere:
+
+- run ID en timestamp;
+- mailonderwerp en bronbestand;
+- artikelnummer, leverancier, merk en productnaam;
+- gekozen sjabloon;
+- SharePoint-pad en SharePoint-link naar de output;
+- reviewstatus;
+- reviewpunten;
+- gebruikte OpenAI modellen;
+- aantal bekende databasehits en fallbackpunten;
+- QA-waarschuwingen vanuit de spec of vertalingendatabase.
 
 ## API
 
-### Health
+Health check:
 
 ```http
 GET /health
 ```
 
-### Label maken
-
-Multipart upload:
+Label-run starten met multipart upload vanuit Make:
 
 ```http
 POST /labels?async=true
@@ -124,9 +153,10 @@ Authorization: Bearer <MAKE_WEBHOOK_SECRET>
 Content-Type: multipart/form-data
 
 spec=<xlsx file>
+emailSubject=<mail subject>
 ```
 
-JSON met SharePoint-pad:
+Label-run starten met een bestand dat al in SharePoint staat:
 
 ```http
 POST /labels?async=true
@@ -134,12 +164,12 @@ Authorization: Bearer <MAKE_WEBHOOK_SECRET>
 Content-Type: application/json
 
 {
-  "sharePointSpecPath": "Label Agent/Input/spec.xlsx",
+  "sharePointSpecPath": "Input/spec.xlsx",
   "emailSubject": "Nieuwe specificatie"
 }
 ```
 
-Met `async=true` reageert de agent direct met een jobstatus:
+Directe response bij async starten:
 
 ```json
 {
@@ -150,68 +180,130 @@ Met `async=true` reageert de agent direct met een jobstatus:
 }
 ```
 
-Poll daarna:
+Status ophalen:
 
 ```http
 GET /labels/{runId}
 Authorization: Bearer <MAKE_WEBHOOK_SECRET>
 ```
 
-Zodra `status` `completed` is, bevat de response het gekozen sjabloon, reviewstatus, SharePoint-outputpad en een kant-en-klare mailrapportage:
+Response als de run klaar is:
 
 ```json
 {
   "status": "completed",
-  "sharePointInputPath": "Input/2026-08-11/spec.xlsx",
+  "runId": "20260811121245-69gxbv",
+  "templateType": "fisheryFrozen",
+  "articleNumber": "7788-01",
   "sharePointOutputPath": "Output/2026-08-11/label.docx",
   "sharePointWebUrl": "https://...",
+  "sharePointReportPath": "Output/2026-08-11/rapportage.txt",
+  "sharePointReportWebUrl": "https://...",
+  "reviewRequired": true,
+  "reviewItems": [],
   "emailReport": {
-    "subject": "Label DV7837-01 - review nodig",
+    "subject": "Label 7788-01 - review nodig",
     "text": "platte tekst voor Make mailbody",
     "html": "<div>HTML-versie voor Make mailbody</div>"
-  },
-  "sharePointReportPath": "Output/2026-08-11/...-rapportage.txt",
-  "sharePointReportWebUrl": "https://..."
+  }
 }
 ```
 
-## Railway
+Tijdens verwerking geeft de status endpoint `202` terug met `status=processing`. Bij een fout geeft de endpoint `500` terug met `status=failed`.
 
-Zet de variabelen in Railway. Voor SharePoint gebruikt de agent Microsoft Graph met app-only credentials:
+## Railway Configuratie
 
-- `SHAREPOINT_TENANT_ID`
-- `SHAREPOINT_CLIENT_ID`
-- `SHAREPOINT_CLIENT_SECRET`
-- `SHAREPOINT_SITE_ID`
-- `SHAREPOINT_DRIVE_ID`
-- `TEAMS_TEAM_ID`
-- `TEAMS_CHANNEL_ID`
+Railway start de service met:
 
-Voor Teams channel mode gebruikt de agent `GET /teams/{team-id}/channels/{channel-id}/filesFolder` om de juiste SharePoint-map van het kanaal te vinden. Voor de Graph-app is lees/schrijfrecht op de bestanden nodig. Praktisch kan dit met `Files.ReadWrite.All` of `Sites.ReadWrite.All`; strenger kan met `Sites.Selected` mits de app expliciet rechten krijgt op de juiste site.
+```bash
+npm start
+```
 
-## Make scenario
+De service luistert op `process.env.PORT`. Railway vult deze variabele normaal zelf in. Daarom moet er in Railway geen vaste poort hardcoded worden.
 
-Aanbevolen flow:
+Belangrijke environment variables:
 
-1. Mailhook ontvangt mail met productspecificatie.
-2. Make stuurt de spec direct multipart door naar de agent. De agent slaat de ontvangen spec automatisch op in `Input/YYYY-MM-DD/` in SharePoint.
-3. Make roept `POST /labels?async=true` aan.
+| Variable | Doel |
+| --- | --- |
+| `PUBLIC_BASE_URL` | Publieke Railway URL, zodat de agent volledige `statusUrl` waarden kan teruggeven. |
+| `MAKE_WEBHOOK_SECRET` | Bearer token waarmee Make de agent mag aanroepen. |
+| `SHAREPOINT_TENANT_ID` | Microsoft tenant ID. |
+| `SHAREPOINT_CLIENT_ID` | App registration client ID. |
+| `SHAREPOINT_CLIENT_SECRET` | App registration secret. |
+| `SHAREPOINT_SITE_ID` | SharePoint site ID, of leeg als Teams channel mode voldoende is. |
+| `SHAREPOINT_DRIVE_ID` | SharePoint drive/document library ID, indien nodig. |
+| `TEAMS_TEAM_ID` | Team ID van het Teams-team. |
+| `TEAMS_CHANNEL_ID` | Channel ID van het kanaal met de bestanden. |
+| `SP_TRANSLATION_DB_PATH` | Pad naar `Database/Labels_13_talen.xlsx`. |
+| `SP_TEMPLATE_NORMAL_PATH` | Pad naar het normale Word-sjabloon. |
+| `SP_TEMPLATE_FROZEN_PATH` | Pad naar het diepvries Word-sjabloon. |
+| `SP_TEMPLATE_FISHERY_FROZEN_PATH` | Pad naar het diepvries visserijproduct Word-sjabloon. |
+| `SP_INPUT_FOLDER` | SharePoint inputmap, meestal `Input`. |
+| `SP_OUTPUT_FOLDER` | SharePoint outputmap, meestal `Output`. |
+| `SP_RUN_LOG_PATH` | Pad naar `Run log/label-agent-runs.xlsx`. |
+| `OPENAI_API_KEY` | OpenAI API key voor fallback/research. |
+| `OPENAI_MODEL` | Standaardmodel, nu meestal `gpt-5-mini`. |
+| `OPENAI_REVIEW_MODEL` | Optioneel zwaarder model voor juridisch gevoeligere fallback. |
+| `OPENAI_ENABLE_FALLBACK` | Zet OpenAI fallback aan of uit. |
+| `OPENAI_ENABLE_MODEL_ESCALATION` | Laat de agent escaleren naar het reviewmodel bij gevoelige velden. |
+| `OPENAI_ENABLE_WEB_SEARCH` | Laat OpenAI fallback web search gebruiken waar relevant. |
+| `OPENAI_TIMEOUT_MS` | Timeout voor OpenAI calls. |
+
+## Microsoft Graph Rechten
+
+De app registration gebruikt app-only toegang. Hiervoor is admin consent nodig. De agent moet bestanden kunnen lezen en schrijven in de SharePoint/Teams-map.
+
+Praktische rechten zijn:
+
+- `Files.ReadWrite.All`
+- `Sites.ReadWrite.All`
+
+Een strakkere inrichting kan met `Sites.Selected`, mits de app expliciet rechten krijgt op de juiste SharePoint-site.
+
+## Make Scenario
+
+In Make gebruik ik deze flow:
+
+1. Mailhook ontvangt de e-mail.
+2. HTTP module stuurt de spec als multipart veld `spec` naar `POST /labels?async=true`.
+3. De Authorization header is `Bearer <MAKE_WEBHOOK_SECRET>`.
 4. Make krijgt direct `runId` en `statusUrl` terug.
-5. Make wacht bijvoorbeeld 20-30 seconden.
-6. Make roept `GET /labels/{runId}` aan.
-7. Als `status=processing`: wacht opnieuw en poll nogmaals.
-8. Als `status=completed`: Make leest `emailReport.subject` en `emailReport.html` of `emailReport.text` uit de JSON-response voor de mail.
-9. Make gebruikt `sharePointWebUrl` voor het gemaakte Word-label.
-10. Optioneel: voeg `sharePointReportWebUrl` toe als extra bijlage/link.
-11. Bij `reviewRequired=true`: stuur naar QA/human check.
+5. Een repeater of sleep wacht ongeveer 20 tot 30 seconden.
+6. Make doet `GET` naar de `statusUrl`.
+7. Als `status=processing`, wacht Make opnieuw en pollt nogmaals.
+8. Als `status=completed`, gebruikt Make `emailReport.subject` en `emailReport.html` of `emailReport.text` voor de mail.
+9. Make voegt de link naar `sharePointWebUrl` toe als outputlabel.
+10. Als `reviewRequired=true`, gaat de mail naar QA/human check.
 
-## Belangrijke compliance-regel
+## Code-Indeling
 
-De agent mag ontbrekende vertalingen voorstellen, maar alles buiten de eigen vertalingsdatabase wordt rood gemarkeerd en vereist menselijke QA. Dit is expres streng: voedseletiketten zijn wettelijk gevoelige documenten.
+De belangrijkste bestanden zijn:
 
-Kleurcodering in het gegenereerde Word-label:
+- `src/server.js`: Express API voor `/health`, `POST /labels` en `GET /labels/{runId}`.
+- `src/labelAgent.js`: hoofdorchestratie van een complete label-run.
+- `src/config.js`: leest alle Railway environment variables.
+- `src/sharepoint/graphClient.js`: Microsoft Graph download/upload en Teams-kanaalmap resolutie.
+- `src/excel/specParser.js`: leest sheet `2. BASIC` en haalt productdata uit de specificatie.
+- `src/translation/translationDb.js`: laadt en indexeert `Labels_13_talen.xlsx`.
+- `src/translation/translator.js`: vertaalt normale velden via database of OpenAI fallback.
+- `src/translation/ingredientDeclaration.js`: vertaalt ingredientendeclaraties op termniveau met groen/rood segmenten.
+- `src/translation/openaiFallback.js`: OpenAI fallback/research met modelkeuze en optionele web search.
+- `src/docx/docxTemplate.js`: vult het Word-sjabloon en past kleurcodering toe.
+- `src/report/emailReport.js`: maakt de korte Make-ready rapportage.
+- `src/runLog.js`: schrijft de run-log terug naar Excel in SharePoint.
 
-- groen: automatisch ingevuld door de agent, of vertaling/terminologie uit `Labels_13_talen.xlsx`; bij ingredientendeclaraties gebeurt dit per herkende term
-- rood: vertaling/tekst staat niet betrouwbaar in `Labels_13_talen.xlsx` en is fallback/AI/manual-required; bij ingredientendeclaraties gebeurt dit per onbekend tekstdeel
+## Security En Compliance
 
-Vaste sjabloontekst die niet door de agent is vervangen blijft ongemarkeerd.
+De agent is zo ingericht dat de eigen vertalingendatabase leidend blijft. OpenAI mag ontbrekende vertalingen voorstellen, maar deze output wordt nooit automatisch als definitief goedgekeurd. Alles buiten de database wordt rood gemarkeerd en vereist menselijke QA-controle.
+
+De agent bewaart tijdens een run tijdelijk bestanden onder `tmp/` in de Railway container. Na een succesvolle run wordt de tijdelijke runmap verwijderd. De blijvende output staat in SharePoint.
+
+De jobstatus voor polling staat in memory in de Railway container. De output en run-log staan wel permanent in SharePoint. Als Railway precies tijdens een run herstart, kan de pollingstatus verloren gaan en moet Make de run opnieuw starten.
+
+## Beheerafspraken
+
+- QA beheert de juridische terminologie in `Database/Labels_13_talen.xlsx`.
+- QA beheert de Word-sjablonen in `Templates/`.
+- IT beheert de Railway environment variables en Microsoft Graph app registration.
+- IT in Make beheert de mailhook, HTTP-call, polling en mailafhandeling.
+- Rode output in het label betekent altijd: controleren voordat dit als definitief label gebruikt wordt.
