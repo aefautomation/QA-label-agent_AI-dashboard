@@ -1,10 +1,10 @@
 // Builds ingredient declarations from trusted database terminology and marks unknown parts for review.
 import { LANGUAGES } from '../config.js';
 import { compactKey } from '../utils/normalize.js';
-import { translateWithOpenAi } from './openaiFallback.js';
+import { translateIngredientTermsWithOpenAi } from './openaiFallback.js';
 
 const INGREDIENT_PREFIX = /^ingredients:\s*/i;
-const TERM_SPLIT_REGEX = /[,;:[\](){}]+|\r?\n+/g;
+const TERM_SPLIT_REGEX = /[,;.:[\](){}]+|\r?\n+/g;
 const WORD_BOUNDARY_LEFT = '(?<![\\p{L}\\p{N}])';
 const WORD_BOUNDARY_RIGHT = '(?![\\p{L}\\p{N}])';
 
@@ -70,20 +70,13 @@ function replacementVariants(english) {
   return unique(variants).filter((variant) => compactKey(variant).length >= 3);
 }
 
-function translationVariants(entry, languageCode) {
-  return unique([
-    entry.translations?.[languageCode],
-    entry.translations?.EN,
-    entry.english
-  ]).filter((variant) => compactKey(variant).length >= 3);
-}
-
 function cleanCandidateTerm(chunk) {
   return String(chunk || '')
     .replace(/\bE\s*\d+[a-z]?\b/gi, ' ')
     .replace(/\b\d+(?:[.,]\d+)?\s*%/g, ' ')
     .replace(/\b\d+(?:[.,]\d+)?\b/g, ' ')
     .replace(/\b(?:ingredients|ingredient|sachet|and|or)\b/gi, ' ')
+    .replace(/^[.\-:\s]+|[.\-:\s]+$/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -177,32 +170,23 @@ function knownSourceSpans(sourceText, translationDb) {
   return selected;
 }
 
-function knownTargetSpans(translatedText, translationDb, languageCode) {
-  const spans = [];
-  for (const entry of translationDb.entryList()) {
-    for (const variant of translationVariants(entry, languageCode).sort((a, b) => b.length - a.length)) {
-      const pattern = patternForTerm(variant);
-      for (const match of translatedText.matchAll(pattern)) {
-        spans.push({
-          start: match.index,
-          end: match.index + match[0].length,
-          sourceTerm: match[0],
-          entry
-        });
-      }
-    }
-  }
-
-  spans.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
-
-  const selected = [];
+function unknownTermsFromDatabaseGaps(sourceText, translationDb) {
+  const terms = [];
+  const spans = knownSourceSpans(sourceText, translationDb);
   let cursor = 0;
+
   for (const span of spans) {
-    if (span.start < cursor) continue;
-    selected.push(span);
-    cursor = span.end;
+    if (span.start > cursor) {
+      terms.push(...candidateTermsFromDeclaration(sourceText.slice(cursor, span.start)));
+    }
+    cursor = Math.max(cursor, span.end);
   }
-  return selected;
+
+  if (cursor < sourceText.length) {
+    terms.push(...candidateTermsFromDeclaration(sourceText.slice(cursor)));
+  }
+
+  return unique(terms);
 }
 
 function pushGapSegment(segments, text) {
@@ -213,14 +197,21 @@ function pushGapSegment(segments, text) {
   });
 }
 
+function spanTextForLanguage(span, languageCode) {
+  if (span.entry) {
+    return span.entry.translations?.[languageCode] || span.entry.translations?.EN || span.entry.english || span.sourceTerm;
+  }
+  return span.translations?.[languageCode] || span.translations?.EN || span.sourceTerm;
+}
+
 function sourceSegmentsForLanguage(sourceText, spans, languageCode) {
   const segments = [];
   let cursor = 0;
 
   for (const span of spans) {
     pushGapSegment(segments, sourceText.slice(cursor, span.start));
-    const replacement = span.entry.translations?.[languageCode] || span.entry.translations?.EN || span.entry.english;
-    segments.push({ text: String(replacement || span.sourceTerm).trim(), red: false });
+    const replacement = spanTextForLanguage(span, languageCode);
+    segments.push({ text: String(replacement || span.sourceTerm).trim(), red: Boolean(span.red) });
     cursor = span.end;
   }
 
@@ -228,26 +219,58 @@ function sourceSegmentsForLanguage(sourceText, spans, languageCode) {
   return mergeSegments(segments);
 }
 
-function targetSegmentsForLanguage(translatedText, spans) {
-  const segments = [];
-  let cursor = 0;
-
-  for (const span of spans) {
-    pushGapSegment(segments, translatedText.slice(cursor, span.start));
-    segments.push({ text: translatedText.slice(span.start, span.end), red: false });
-    cursor = span.end;
-  }
-
-  pushGapSegment(segments, translatedText.slice(cursor));
-  return mergeSegments(segments);
-}
-
 function segmentsToText(segments) {
   return segments.map((segment) => segment.text).join('').replace(/\s+([,;:)])/g, '$1').replace(/([(])\s+/g, '$1').replace(/\s{2,}/g, ' ').trim();
 }
 
-function buildDatabaseTermTranslationResult(sourceText, translationDb) {
-  const spans = knownSourceSpans(sourceText, translationDb);
+function overlapsAny(span, others) {
+  return others.some((other) => span.start < other.end && span.end > other.start);
+}
+
+function aiSourceSpans(sourceText, termTranslations = {}, protectedSpans = []) {
+  const spans = [];
+  const terms = Object.keys(termTranslations || {}).sort((a, b) => b.length - a.length);
+  const seen = new Set();
+
+  for (const term of terms) {
+    const translations = termTranslations[term];
+    for (const variant of termVariants(term).sort((a, b) => b.length - a.length)) {
+      const pattern = patternForTerm(variant);
+      for (const match of sourceText.matchAll(pattern)) {
+        const span = {
+          start: match.index,
+          end: match.index + match[0].length,
+          sourceTerm: match[0],
+          translations,
+          red: true
+        };
+        const key = `${span.start}:${span.end}`;
+        if (seen.has(key) || overlapsAny(span, protectedSpans)) continue;
+        seen.add(key);
+        spans.push(span);
+      }
+    }
+  }
+
+  return spans.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+}
+
+function selectSpans(spans) {
+  const selected = [];
+  let cursor = 0;
+
+  for (const span of spans.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start))) {
+    if (span.start < cursor) continue;
+    selected.push(span);
+    cursor = span.end;
+  }
+  return selected;
+}
+
+function buildDatabaseTermTranslationResult(sourceText, translationDb, termTranslations = {}) {
+  const databaseSpans = knownSourceSpans(sourceText, translationDb);
+  const aiSpans = aiSourceSpans(sourceText, termTranslations, databaseSpans);
+  const spans = selectSpans([...databaseSpans, ...aiSpans]);
   const translations = {};
   const languageSegments = {};
 
@@ -269,18 +292,9 @@ function buildExactTranslationSegments(translations) {
   );
 }
 
-function buildFallbackTranslationSegments(translations, translationDb) {
-  const languageSegments = {};
-  for (const language of LANGUAGES) {
-    const text = translations?.[language.code] || translations?.EN || '';
-    const spans = knownTargetSpans(text, translationDb, language.code);
-    languageSegments[language.code] = targetSegmentsForLanguage(text, spans);
-  }
-  return languageSegments;
-}
-
 export function analyzeIngredientsTerminology(sourceText, translationDb) {
   const candidates = candidateTermsFromDeclaration(sourceText);
+  const gapTerms = unknownTermsFromDatabaseGaps(sourceText, translationDb);
   const unmatchedTerms = [];
   const exactTermHits = [];
 
@@ -301,7 +315,7 @@ export function analyzeIngredientsTerminology(sourceText, translationDb) {
   return {
     exactTermHits,
     knownTerms: findKnownTerms(sourceText, translationDb),
-    unmatchedTerms
+    unmatchedTerms: gapTerms.length ? gapTerms : unique(unmatchedTerms)
   };
 }
 
@@ -334,29 +348,30 @@ export async function translateIngredientsDeclaration({
 
   if (openaiConfig?.apiKey && openaiConfig.enableFallback !== false && hasUnknownTerms) {
     try {
-      const fallback = await translateWithOpenAi({
+      const fallback = await translateIngredientTermsWithOpenAi({
         fieldName,
         sourceText: cleanSource,
         config: openaiConfig,
         productContext,
-        fieldKind: 'ingredients',
         terminology: analysis.knownTerms,
         unmatchedTerms: analysis.unmatchedTerms
       });
+      const translated = buildDatabaseTermTranslationResult(cleanSource, translationDb, fallback.termTranslations);
 
       return {
         fieldName,
         sourceText: cleanSource,
         status: fallback.status,
         trusted: false,
-        translations: fallback.translations,
-        languageSegments: buildFallbackTranslationSegments(fallback.translations, translationDb),
+        translations: translated.translations,
+        languageSegments: translated.languageSegments,
         reviewRequired: true,
-        reviewReason: 'Ingredientendeclaratie bevat termen zonder exacte match in Labels_13_talen.xlsx; OpenAI/research fallback gebruikt.',
+        reviewReason: 'Ingredientendeclaratie bevat termen zonder exacte match in Labels_13_talen.xlsx; OpenAI/research fallback alleen voor onbekende termen gebruikt.',
         source: {
           type: fallback.status,
           terminologyHits: analysis.knownTerms.length,
           unmatchedTerms: analysis.unmatchedTerms,
+          aiTermCount: Object.keys(fallback.termTranslations || {}).length,
           model: fallback.model || '',
           modelTier: fallback.modelTier || '',
           modelEscalated: Boolean(fallback.modelEscalated),
@@ -364,7 +379,8 @@ export async function translateIngredientsDeclaration({
           sources: fallback.sources || []
         },
         notes: [
-          `${analysis.knownTerms.length} bekende termen uit de vertalingendatabase gebruikt als terminologie.`,
+          `${analysis.knownTerms.length} bekende termen uit de vertalingendatabase groen/ongewijzigd gebruikt.`,
+          `${Object.keys(fallback.termTranslations || {}).length} onbekende term(en) via OpenAI fallback rood ingevuld.`,
           ...analysis.unmatchedTerms.slice(0, 25).map((term) => `Geen exacte databasehit voor: ${term}`),
           ...(fallback.model ? [`OpenAI model: ${fallback.model}${fallback.modelEscalated ? ' (reviewmodel)' : ''}.`] : []),
           ...(fallback.modelReason ? [`Modelkeuze: ${fallback.modelReason}`] : []),
