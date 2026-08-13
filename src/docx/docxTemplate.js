@@ -95,7 +95,11 @@ function buildParagraph(originalParagraphXml, text, options = {}) {
   const originalRPr = firstTag(originalParagraphXml, 'w:rPr');
   if (Array.isArray(options.segments) && options.segments.length) {
     const runs = options.segments
-      .map((segment) => buildRun(originalRPr, segment.text, { color, preserveWhitespace: true, ...segment }))
+      .map((segment) => buildRun(originalRPr, segment.text, {
+        ...segment,
+        color: segment.color || color,
+        preserveWhitespace: true
+      }))
       .join('');
     return `<w:p>${pPr}${runs}</w:p>`;
   }
