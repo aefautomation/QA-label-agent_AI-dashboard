@@ -43,6 +43,22 @@ function formatTerminology(terminology = []) {
     .join('\n');
 }
 
+function confidenceDetails(raw = {}) {
+  const confidence = String(raw.confidence || raw.certainty || raw.confidenceLevel || '').trim().toLowerCase();
+  const confidenceScore = Number(raw.confidenceScore ?? raw.score ?? raw.confidence_score ?? NaN);
+  const confidenceReason = String(raw.confidenceReason || raw.reason || raw.confidence_note || '').trim();
+  const threshold = Number(raw.threshold ?? raw.confidenceThreshold ?? 0.8);
+  const explicitlyUncertain = ['medium', 'low'].includes(confidence);
+  const confident = !explicitlyUncertain && (confidence === 'high' || (Number.isFinite(confidenceScore) && confidenceScore >= threshold));
+
+  return {
+    confidence: confidence || (confident ? 'high' : 'unknown'),
+    confidenceScore: Number.isFinite(confidenceScore) ? confidenceScore : null,
+    confidenceReason,
+    confident
+  };
+}
+
 async function requestOpenAiJson({ config, model, input }) {
   const payload = {
     model,
@@ -82,27 +98,17 @@ async function requestOpenAiJson({ config, model, input }) {
   return parseJsonResponse(extractOutputText(responseJson));
 }
 
-function escalationReason({ fieldName, fieldKind = '', unmatchedTerms = [] }) {
-  const normalizedField = String(fieldName || '').toLowerCase();
+function escalationReason({ fieldKind = '', unmatchedTerms = [] }) {
   if (fieldKind === 'ingredients' && unmatchedTerms.length > 0) {
     return `Ingredientendeclaratie bevat ${unmatchedTerms.length} onbekende term(en).`;
-  }
-  if (/productnaam|wettelijke|legal product/.test(normalizedField)) {
-    return 'Productnaam/wettelijke benaming zonder databasehit.';
-  }
-  if (/waarschuwing|warning/.test(normalizedField)) {
-    return 'Waarschuwing zonder databasehit.';
-  }
-  if (/visserij|vangst|fishing|fishery|productiemethode/.test(normalizedField)) {
-    return 'Visserijveld zonder databasehit.';
   }
   return '';
 }
 
-export function selectOpenAiModel({ config, fieldName, fieldKind = '', unmatchedTerms = [] }) {
+export function selectOpenAiModel({ config, fieldKind = '', unmatchedTerms = [] }) {
   const standardModel = config?.model || 'gpt-5-mini';
   const reviewModel = config?.reviewModel || '';
-  const reason = escalationReason({ fieldName, fieldKind, unmatchedTerms });
+  const reason = escalationReason({ fieldKind, unmatchedTerms });
   const canEscalate = config?.enableModelEscalation !== false && reviewModel && reviewModel !== standardModel;
 
   if (reason && canEscalate) {
@@ -205,6 +211,9 @@ Return only JSON:
     "SK": "..."
   },
   "notes": ["short QA note"],
+  "confidence": "high|medium|low",
+  "confidenceScore": 0.0,
+  "confidenceReason": "why this is or is not a high-confidence legal label translation",
   "sources": ["url"]
 }`;
 
@@ -223,6 +232,10 @@ Return only JSON:
     translations,
     notes: Array.isArray(parsed.notes) ? parsed.notes.map(String) : [],
     sources: Array.isArray(parsed.sources) ? parsed.sources.map(String) : [],
+    ...confidenceDetails({
+      ...parsed,
+      threshold: config.confidencePurpleThreshold
+    }),
     model: selectedModel.model,
     modelTier: selectedModel.tier,
     modelEscalated: selectedModel.escalated,
@@ -236,7 +249,7 @@ function normalizeTermTranslations(parsed, unmatchedTerms) {
   const entries = Array.isArray(rawContainer)
     ? rawContainer.map((item) => [
         item.sourceTerm || item.term || item.source || '',
-        item.translations || item
+        item
       ])
     : Object.entries(rawContainer);
   const byCompact = new Map(
@@ -258,7 +271,13 @@ function normalizeTermTranslations(parsed, unmatchedTerms) {
         ''
       ).trim() || term;
     }
-    termTranslations[term] = translations;
+    termTranslations[term] = {
+      translations,
+      ...confidenceDetails({
+        ...raw,
+        threshold: parsed.confidencePurpleThreshold
+      })
+    };
   }
 
   return termTranslations;
@@ -311,6 +330,8 @@ Strict rules:
 - Preserve allergen emphasis in CAPITALS where relevant.
 - Do not add missing product facts.
 - If a term remains uncertain, provide the best conservative term and explain the uncertainty in notes.
+- Use confidence="high" only when the proposed legal label term is a common/standard formulation and you do not need extra supplier/QA information.
+- Use confidence="medium" or "low" when wording depends on context, national convention, product facts, composition details or source interpretation.
 
 Protected database terminology from Labels_13_talen.xlsx. The code will keep these terms green and untouched:
 ${formatTerminology(terminology)}
@@ -344,7 +365,10 @@ Return only JSON:
       "PL": "...",
       "ES": "...",
       "SK": "..."
-    }
+    },
+    "confidence": "high|medium|low",
+    "confidenceScore": 0.0,
+    "confidenceReason": "why this term is or is not high-confidence"
   },
   "notes": ["short QA note"],
   "sources": ["url"]
@@ -357,7 +381,10 @@ Return only JSON:
   });
 
   return {
-    termTranslations: normalizeTermTranslations(parsed, terms),
+    termTranslations: normalizeTermTranslations({
+      ...parsed,
+      confidencePurpleThreshold: config.confidencePurpleThreshold
+    }, terms),
     notes: Array.isArray(parsed.notes) ? parsed.notes.map(String) : [],
     sources: Array.isArray(parsed.sources) ? parsed.sources.map(String) : [],
     model: selectedModel.model,

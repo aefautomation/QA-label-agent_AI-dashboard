@@ -7,6 +7,7 @@ const INGREDIENT_PREFIX = /^ingredients:\s*/i;
 const TERM_SPLIT_REGEX = /[,;.:[\](){}]+|\r?\n+/g;
 const WORD_BOUNDARY_LEFT = '(?<![\\p{L}\\p{N}])';
 const WORD_BOUNDARY_RIGHT = '(?![\\p{L}\\p{N}])';
+const AI_CONFIDENT_PURPLE = '7030A0';
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -127,11 +128,12 @@ function mergeSegments(segments) {
   for (const segment of segments) {
     if (!segment?.text) continue;
     const red = Boolean(segment.red);
+    const color = segment.color || '';
     const previous = merged.at(-1);
-    if (previous && previous.red === red) {
+    if (previous && previous.red === red && (previous.color || '') === color) {
       previous.text += segment.text;
     } else {
-      merged.push({ text: segment.text, red });
+      merged.push({ text: segment.text, red, color });
     }
   }
   return merged;
@@ -201,7 +203,7 @@ function spanTextForLanguage(span, languageCode) {
   if (span.entry) {
     return span.entry.translations?.[languageCode] || span.entry.translations?.EN || span.entry.english || span.sourceTerm;
   }
-  return span.translations?.[languageCode] || span.translations?.EN || span.sourceTerm;
+  return span.aiTerm?.translations?.[languageCode] || span.aiTerm?.translations?.EN || span.translations?.[languageCode] || span.translations?.EN || span.sourceTerm;
 }
 
 function sourceSegmentsForLanguage(sourceText, spans, languageCode) {
@@ -211,7 +213,11 @@ function sourceSegmentsForLanguage(sourceText, spans, languageCode) {
   for (const span of spans) {
     pushGapSegment(segments, sourceText.slice(cursor, span.start));
     const replacement = spanTextForLanguage(span, languageCode);
-    segments.push({ text: String(replacement || span.sourceTerm).trim(), red: Boolean(span.red) });
+    segments.push({
+      text: String(replacement || span.sourceTerm).trim(),
+      red: Boolean(span.red),
+      color: span.color || ''
+    });
     cursor = span.end;
   }
 
@@ -233,7 +239,7 @@ function aiSourceSpans(sourceText, termTranslations = {}, protectedSpans = []) {
   const seen = new Set();
 
   for (const term of terms) {
-    const translations = termTranslations[term];
+    const aiTerm = termTranslations[term];
     for (const variant of termVariants(term).sort((a, b) => b.length - a.length)) {
       const pattern = patternForTerm(variant);
       for (const match of sourceText.matchAll(pattern)) {
@@ -241,8 +247,9 @@ function aiSourceSpans(sourceText, termTranslations = {}, protectedSpans = []) {
           start: match.index,
           end: match.index + match[0].length,
           sourceTerm: match[0],
-          translations,
-          red: true
+          aiTerm,
+          red: !aiTerm?.confident,
+          color: aiTerm?.confident ? AI_CONFIDENT_PURPLE : ''
         };
         const key = `${span.start}:${span.end}`;
         if (seen.has(key) || overlapsAny(span, protectedSpans)) continue;
@@ -357,6 +364,9 @@ export async function translateIngredientsDeclaration({
         unmatchedTerms: analysis.unmatchedTerms
       });
       const translated = buildDatabaseTermTranslationResult(cleanSource, translationDb, fallback.termTranslations);
+      const aiTerms = Object.values(fallback.termTranslations || {});
+      const confidentAiTermCount = aiTerms.filter((term) => term?.confident).length;
+      const uncertainAiTermCount = aiTerms.length - confidentAiTermCount;
 
       return {
         fieldName,
@@ -371,7 +381,9 @@ export async function translateIngredientsDeclaration({
           type: fallback.status,
           terminologyHits: analysis.knownTerms.length,
           unmatchedTerms: analysis.unmatchedTerms,
-          aiTermCount: Object.keys(fallback.termTranslations || {}).length,
+          aiTermCount: aiTerms.length,
+          confidentAiTermCount,
+          uncertainAiTermCount,
           model: fallback.model || '',
           modelTier: fallback.modelTier || '',
           modelEscalated: Boolean(fallback.modelEscalated),
@@ -380,7 +392,8 @@ export async function translateIngredientsDeclaration({
         },
         notes: [
           `${analysis.knownTerms.length} bekende termen uit de vertalingendatabase groen/ongewijzigd gebruikt.`,
-          `${Object.keys(fallback.termTranslations || {}).length} onbekende term(en) via OpenAI fallback rood ingevuld.`,
+          `${confidentAiTermCount} onbekende term(en) via OpenAI fallback paars/high-confidence ingevuld.`,
+          `${uncertainAiTermCount} onbekende term(en) via OpenAI fallback rood/onzeker ingevuld.`,
           ...analysis.unmatchedTerms.slice(0, 25).map((term) => `Geen exacte databasehit voor: ${term}`),
           ...(fallback.model ? [`OpenAI model: ${fallback.model}${fallback.modelEscalated ? ' (reviewmodel)' : ''}.`] : []),
           ...(fallback.modelReason ? [`Modelkeuze: ${fallback.modelReason}`] : []),

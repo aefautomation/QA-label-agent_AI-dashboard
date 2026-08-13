@@ -74,6 +74,10 @@ function reviewItemsFromTranslations(translations) {
       modelTier: field.source?.modelTier || '',
       modelEscalated: Boolean(field.source?.modelEscalated),
       modelReason: field.source?.modelReason || '',
+      confidence: field.source?.confidence || '',
+      confidenceScore: field.source?.confidenceScore ?? '',
+      confidenceReason: field.source?.confidenceReason || '',
+      confident: Boolean(field.source?.confident),
       sources: field.source?.sources || []
     }));
 }

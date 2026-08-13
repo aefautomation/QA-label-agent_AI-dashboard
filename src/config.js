@@ -51,6 +51,7 @@ export function getConfig() {
       enableModelEscalation: boolEnv('OPENAI_ENABLE_MODEL_ESCALATION', true),
       enableFallback: boolEnv('OPENAI_ENABLE_FALLBACK', true),
       enableWebSearch: boolEnv('OPENAI_ENABLE_WEB_SEARCH', true),
+      confidencePurpleThreshold: Number(env('OPENAI_CONFIDENCE_PURPLE_THRESHOLD', '0.8')),
       timeoutMs: Number(env('OPENAI_TIMEOUT_MS', '60000'))
     },
     sharePoint: {

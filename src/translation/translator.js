@@ -65,11 +65,17 @@ export async function translateField({ fieldName, sourceText, translationDb, ope
         modelTier: fallback.modelTier || '',
         modelEscalated: Boolean(fallback.modelEscalated),
         modelReason: fallback.modelReason || '',
+        confident: Boolean(fallback.confident),
+        confidence: fallback.confidence || '',
+        confidenceScore: fallback.confidenceScore,
+        confidenceReason: fallback.confidenceReason || '',
         sources: fallback.sources || []
       },
       notes: [
         ...(fallback.model ? [`OpenAI model: ${fallback.model}${fallback.modelEscalated ? ' (reviewmodel)' : ''}.`] : []),
         ...(fallback.modelReason ? [`Modelkeuze: ${fallback.modelReason}`] : []),
+        ...(fallback.confidence ? [`AI zekerheid: ${fallback.confidence}${fallback.confidenceScore == null ? '' : ` (${fallback.confidenceScore})`}.`] : []),
+        ...(fallback.confidenceReason ? [`Zekerheidsreden: ${fallback.confidenceReason}`] : []),
         ...(fallback.notes || [])
       ]
     };

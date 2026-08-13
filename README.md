@@ -17,9 +17,11 @@ De technische keten is als volgt:
 7. De agent gebruikt `Labels_13_talen.xlsx` als goedgekeurde vertalingendatabase.
 8. Alleen als een term of tekst niet betrouwbaar in de database staat, gebruikt de agent OpenAI als fallback/researchlaag.
 9. In het Word-label wordt automatisch ingevulde en vertrouwde tekst groen gemarkeerd.
-10. Alles wat niet betrouwbaar uit de vertalingendatabase komt, wordt rood gemarkeerd en komt in de rapportage voor menselijke QA-controle.
-11. Het gemaakte Word-label, een korte rapportage en de run-log worden opgeslagen in SharePoint.
-12. Make pollt de `statusUrl` totdat de run klaar is en gebruikt daarna de SharePoint-link en rapportage in de mail.
+10. AI fallback met hoge zekerheid wordt paars gemarkeerd.
+11. AI fallback met twijfel, fouten of manual-required output wordt rood gemarkeerd.
+12. Alles buiten de vertalingendatabase blijft zichtbaar in de rapportage voor menselijke QA-controle.
+13. Het gemaakte Word-label, een korte rapportage en de run-log worden opgeslagen in SharePoint.
+14. Make pollt de `statusUrl` totdat de run klaar is en gebruikt daarna de SharePoint-link en rapportage in de mail.
 
 ## Architectuur
 
@@ -67,11 +69,11 @@ De bestanden blijven normale Office-bestanden. QA kan dus de vertalingendatabase
 12. De agent downloadt de actuele `Labels_13_talen.xlsx` uit `Database/`.
 13. De agent downloadt het juiste Word-sjabloon uit `Templates/`.
 14. De agent zoekt per tekstveld eerst naar een match in de vertalingendatabase.
-15. Bij ingredientendeclaraties werkt dit op termniveau: bekende termen zoals `water` worden groen/trusted verwerkt, terwijl onbekende delen rood blijven.
+15. Bij ingredientendeclaraties werkt dit op termniveau: bekende termen zoals `water` worden groen/trusted verwerkt, AI high-confidence termen worden paars en onzekere delen blijven rood.
 16. Als een volledige tekst of term niet betrouwbaar in de database staat, gaat die naar OpenAI fallback.
 17. OpenAI krijgt geen volledige SharePoint-map en geen Word-template als bestand. OpenAI krijgt alleen de relevante tekstvelden, productcontext, bekende database-terminologie en onbekende termen.
 18. De agent vult het Word-sjabloon met de gevonden waarden en vertalingen.
-19. De agent markeert automatisch ingevulde/trusted output groen en reviewplichtige output rood.
+19. De agent markeert automatisch ingevulde/trusted output groen, AI high-confidence output paars en onzekere reviewoutput rood.
 20. De agent maakt daarnaast een korte rapportage voor Make met onderwerp, tekstversie en HTML-versie.
 21. Het Word-label wordt geupload naar `Output/YYYY-MM-DD/` in SharePoint.
 22. De rapportage wordt als `.txt` opgeslagen in dezelfde outputmap.
@@ -104,17 +106,18 @@ De agent gebruikt OpenAI alleen wanneer:
 
 Voor ingredientendeclaraties stuurt de agent ook de bekende termen uit de database mee als verplichte terminologie. De bedoeling is dat OpenAI niet vrij gaat "mooie vertalingen" maken, maar juridisch conservatieve labelbenamingen voorstelt. Als `OPENAI_ENABLE_WEB_SEARCH=true` staat, mag de fallback ook web search gebruiken binnen de ingestelde OpenAI tooling.
 
-Alle OpenAI-output blijft reviewplichtig. Ook als de vertaling goed lijkt, wordt deze rood in het document gezet totdat QA dit gecontroleerd heeft en eventueel toevoegt aan de vertalingendatabase.
+Alle OpenAI-output blijft reviewplichtig. Als OpenAI aangeeft dat de onderzochte vertaling high-confidence is, wordt deze paars in het document gezet. Als OpenAI onzeker is, als context ontbreekt of als fallback faalt, wordt de tekst rood gezet. QA kan goedgekeurde paarse/rode termen later toevoegen aan de vertalingendatabase, zodat ze bij volgende runs groen worden.
 
 ## Kleurcodering In Het Label
 
 De kleurcodering is bedoeld om QA snel te laten zien wat automatisch is gedaan en wat extra controle nodig heeft.
 
 - Groen: automatisch ingevulde waarden of termen/vertalingen uit `Labels_13_talen.xlsx`.
-- Rood: tekst die niet betrouwbaar uit `Labels_13_talen.xlsx` komt, bijvoorbeeld OpenAI fallback, onbekende ingredientdelen of manual-required tekst.
+- Paars: OpenAI fallback/research met hoge zekerheid, maar nog niet afkomstig uit `Labels_13_talen.xlsx`.
+- Rood: OpenAI fallback met twijfel, fallback-fout, onbekende ingredientdelen of manual-required tekst.
 - Ongemarkeerd: vaste tekst die al in het Word-sjabloon stond en niet door de agent is vervangen.
 
-Bij ingredientendeclaraties gebeurt de markering per herkende term. Daardoor kan in een rode ingredientenregel alsnog bijvoorbeeld `water`, `sugar` of een andere bekende term groen zijn als die in de database staat.
+Bij ingredientendeclaraties gebeurt de markering per herkende term. Daardoor kan een regel tegelijk groen, paars en rood bevatten: database-termen groen, AI high-confidence termen paars en onzekere delen rood.
 
 ## Output En Run-Log
 
@@ -242,11 +245,12 @@ Belangrijke environment variables:
 | `SP_OUTPUT_FOLDER` | SharePoint outputmap, meestal `Output`. |
 | `SP_RUN_LOG_PATH` | Pad naar `Run log/label-agent-runs.xlsx`. |
 | `OPENAI_API_KEY` | OpenAI API key voor fallback/research. |
-| `OPENAI_MODEL` | Standaardmodel, nu meestal `gpt-5-mini`. |
-| `OPENAI_REVIEW_MODEL` | Optioneel zwaarder model voor juridisch gevoeligere fallback. |
+| `OPENAI_MODEL` | Standaardmodel voor alle niet-ingredient velden, nu meestal `gpt-5-mini`. |
+| `OPENAI_REVIEW_MODEL` | Optioneel zwaarder model voor ingredientendeclaraties, meestal `gpt-5`. |
 | `OPENAI_ENABLE_FALLBACK` | Zet OpenAI fallback aan of uit. |
-| `OPENAI_ENABLE_MODEL_ESCALATION` | Laat de agent escaleren naar het reviewmodel bij gevoelige velden. |
+| `OPENAI_ENABLE_MODEL_ESCALATION` | Laat ingredientendeclaraties escaleren naar het reviewmodel. Andere velden blijven op `OPENAI_MODEL`. |
 | `OPENAI_ENABLE_WEB_SEARCH` | Laat OpenAI fallback web search gebruiken waar relevant. |
+| `OPENAI_CONFIDENCE_PURPLE_THRESHOLD` | Zekerheidsdrempel voor paarse AI-output, standaard `0.8`. |
 | `OPENAI_TIMEOUT_MS` | Timeout voor OpenAI calls. |
 
 ## Microsoft Graph Rechten
@@ -286,7 +290,7 @@ De belangrijkste bestanden zijn:
 - `src/excel/specParser.js`: leest sheet `2. BASIC` en haalt productdata uit de specificatie.
 - `src/translation/translationDb.js`: laadt en indexeert `Labels_13_talen.xlsx`.
 - `src/translation/translator.js`: vertaalt normale velden via database of OpenAI fallback.
-- `src/translation/ingredientDeclaration.js`: vertaalt ingredientendeclaraties op termniveau met groen/rood segmenten.
+- `src/translation/ingredientDeclaration.js`: vertaalt ingredientendeclaraties op termniveau met groen/paars/rood segmenten.
 - `src/translation/openaiFallback.js`: OpenAI fallback/research met modelkeuze en optionele web search.
 - `src/docx/docxTemplate.js`: vult het Word-sjabloon en past kleurcodering toe.
 - `src/report/emailReport.js`: maakt de korte Make-ready rapportage.
@@ -294,7 +298,7 @@ De belangrijkste bestanden zijn:
 
 ## Security En Compliance
 
-De agent is zo ingericht dat de eigen vertalingendatabase leidend blijft. OpenAI mag ontbrekende vertalingen voorstellen, maar deze output wordt nooit automatisch als definitief goedgekeurd. Alles buiten de database wordt rood gemarkeerd en vereist menselijke QA-controle.
+De agent is zo ingericht dat de eigen vertalingendatabase leidend blijft. OpenAI mag ontbrekende vertalingen voorstellen, maar deze output wordt nooit automatisch als definitief goedgekeurd. High-confidence AI-output wordt paars gemarkeerd, onzekere AI-output wordt rood gemarkeerd, en beide blijven zichtbaar voor menselijke QA-controle.
 
 De agent bewaart tijdens een run tijdelijk bestanden onder `tmp/` in de Railway container. Na een succesvolle run wordt de tijdelijke runmap verwijderd. De blijvende output staat in SharePoint.
 

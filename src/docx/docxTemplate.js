@@ -6,6 +6,7 @@ import { isMeaningful, normalizeText, xmlEscape } from '../utils/normalize.js';
 
 const FILLED_GREEN = '00B050';
 const REVIEW_RED = 'FF0000';
+const AI_CONFIDENT_PURPLE = '7030A0';
 
 function xmlDecode(value) {
   return String(value ?? '')
@@ -237,7 +238,23 @@ function fieldText(field, languageCode) {
 }
 
 function fieldRed(field) {
+  if (fieldAiConfident(field)) return false;
   return Boolean(field && field.reviewRequired);
+}
+
+function fieldAiConfident(field) {
+  return Boolean(field?.source?.type && /^openai/i.test(field.source.type) && field.source.confident);
+}
+
+function fieldColor(field) {
+  return fieldAiConfident(field) ? AI_CONFIDENT_PURPLE : '';
+}
+
+function fieldStyle(field) {
+  return {
+    red: fieldRed(field),
+    color: fieldColor(field)
+  };
 }
 
 function fieldLanguageSegments(field, languageCode) {
@@ -250,11 +267,12 @@ function mergeStyleSegments(segments) {
   for (const segment of segments) {
     if (!segment?.text) continue;
     const red = Boolean(segment.red);
+    const color = segment.color || '';
     const previous = merged.at(-1);
-    if (previous && previous.red === red) {
+    if (previous && previous.red === red && (previous.color || '') === color) {
       previous.text += segment.text;
     } else {
-      merged.push({ ...segment, red });
+      merged.push({ ...segment, red, color });
     }
   }
   return merged;
@@ -293,7 +311,8 @@ function replacePlaceholderWithSegments(text, value, replacementSegments, fallba
     before ? { text: before, red: false } : null,
     ...replacementSegments.map((segment) => ({
       text: segment.text,
-      red: Boolean(segment.red)
+      red: Boolean(segment.red),
+      color: segment.color || ''
     })),
     after ? { text: after, red: false } : null
   ]);
@@ -330,7 +349,7 @@ function inlineLanguageHeadingReplacement(text, translations, baseStyle = {}) {
     const languageCode = match[1];
     segments.push({
       text: `(${languageCode}) ${fieldText(translations.productName, languageCode)}`,
-      red: fieldRed(translations.productName)
+      ...fieldStyle(translations.productName)
     });
     cursor = match.index + match[0].length;
   }
@@ -455,7 +474,7 @@ function createParagraphReplacer({ spec, translations, skipHeaderMetadata = fals
       const productName = fieldText(translations.productName, currentLanguage);
       return {
         text: `(${currentLanguage}) ${productName}`,
-        red: fieldRed(translations.productName)
+        ...fieldStyle(translations.productName)
       };
     }
 
@@ -475,7 +494,7 @@ function createParagraphReplacer({ spec, translations, skipHeaderMetadata = fals
       const warning = fieldText(translations.warning, currentLanguage);
       return {
         text: warning,
-        red: warning ? fieldRed(translations.warning) : false
+        ...(warning ? fieldStyle(translations.warning) : { red: false })
       };
     }
 
@@ -485,14 +504,14 @@ function createParagraphReplacer({ spec, translations, skipHeaderMetadata = fals
         text,
         ingredientText,
         fieldLanguageSegments(translations.ingredients, currentLanguage),
-        { red: fieldRed(translations.ingredients) }
+        fieldStyle(translations.ingredients)
       );
     }
 
     if (/\bX\b/.test(text) && /(herkunft|herkomst|origine|ursprung|alkuperä|oprindelse|origin|původ|származási|pochodzenie|origen|pôvod)/i.test(text)) {
       return {
         text: replacePlaceholder(text, fieldText(translations.origin, currentLanguage)),
-        red: fieldRed(translations.origin)
+        ...fieldStyle(translations.origin)
       };
     }
 
@@ -502,7 +521,7 @@ function createParagraphReplacer({ spec, translations, skipHeaderMetadata = fals
         inlineLanguageHeadingReplacement(
           replacePlaceholder(text, direction),
           translations,
-          { red: fieldRed(translations.direction) }
+          fieldStyle(translations.direction)
         )
       );
     }
@@ -529,7 +548,7 @@ function createParagraphReplacer({ spec, translations, skipHeaderMetadata = fals
       if (fishProductionMode !== 'freshwater') return { text: '', red: false };
       return {
         text: replacePlaceholder(text, fieldText(translations.fishingMethod, currentLanguage)),
-        red: fieldRed(translations.fishingMethod)
+        ...fieldStyle(translations.fishingMethod)
       };
     }
 
@@ -541,7 +560,8 @@ function createParagraphReplacer({ spec, translations, skipHeaderMetadata = fals
           fieldText(translations.fishingArea, currentLanguage),
           fieldText(translations.fishingMethod, currentLanguage)
         ),
-        red: fieldRed(translations.fishingArea) || fieldRed(translations.fishingMethod)
+        red: fieldStyle(translations.fishingArea).red || fieldStyle(translations.fishingMethod).red,
+        color: fieldStyle(translations.fishingArea).color || fieldStyle(translations.fishingMethod).color || ''
       };
     }
 
@@ -556,7 +576,7 @@ function createParagraphReplacer({ spec, translations, skipHeaderMetadata = fals
     }
 
     if (/^name:?$/i.test(text.trim()) && inCartonBlock) {
-      return { text: `Name: ${spec.legalProduct || fieldText(translations.productName, 'EN')}`.trim(), red: fieldRed(translations.productName) };
+      return { text: `Name: ${spec.legalProduct || fieldText(translations.productName, 'EN')}`.trim(), ...fieldStyle(translations.productName) };
     }
 
     if (/^content:?$/i.test(text.trim()) && inCartonBlock) {

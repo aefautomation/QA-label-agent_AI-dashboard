@@ -89,8 +89,9 @@ export function buildEmailReport(run) {
     '',
     'Kleurcodering in het label:',
     '- Groen: automatisch ingevuld of afkomstig uit Labels_13_talen.xlsx.',
-    '- Rood: niet betrouwbaar in de database gevonden of fallback/AI/manual-required.',
-    '- Ingredientendeclaraties worden per herkende term groen/rood gemarkeerd.',
+    '- Paars: OpenAI fallback/research met hoge zekerheid, maar niet afkomstig uit de database.',
+    '- Rood: niet betrouwbaar in de database gevonden en onzeker/fallback-error/manual-required.',
+    '- Ingredientendeclaraties worden per herkende term groen/paars/rood gemarkeerd.',
     '',
     reviewRequired ? `Reviewpunten (${reviewItems.length}):` : 'Reviewpunten: geen.',
     ...reviewed,
@@ -109,7 +110,7 @@ export function buildEmailReport(run) {
     `<tr><td style="padding: 2px 12px 2px 0;"><strong>Run ID</strong></td><td>${escapeHtml(compact(run.runId))}</td></tr>`,
     output ? `<tr><td style="padding: 2px 12px 2px 0;"><strong>Output</strong></td><td>${escapeHtml(output)}</td></tr>` : '',
     '</table>',
-    '<p><strong>Kleurcodering:</strong> groen = automatisch ingevuld of uit Labels_13_talen.xlsx; rood = fallback/AI/manual-required. Ingredientendeclaraties worden per herkende term gemarkeerd.</p>',
+    '<p><strong>Kleurcodering:</strong> groen = automatisch ingevuld of uit Labels_13_talen.xlsx; paars = AI fallback/research met hoge zekerheid; rood = onzeker/fallback-error/manual-required. Ingredientendeclaraties worden per herkende term gemarkeerd.</p>',
     reviewRequired
       ? `<p><strong>Reviewpunten (${reviewItems.length})</strong></p><ol>${reviewSummaryHtml(reviewItems)}</ol>${moreReviewItemsHtml(reviewItems)}`
       : '<p><strong>Reviewpunten:</strong> geen.</p>',
