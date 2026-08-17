@@ -48,43 +48,6 @@ function dateFromFilename(filePath) {
   return '';
 }
 
-function isStorageOnlyDirection(value) {
-  const text = normalizeText(value);
-  if (!isMeaningful(text)) return false;
-
-  const hasStorageSignal = (
-    text.includes('store') ||
-    text.includes('bewaar') ||
-    text.includes('keep frozen') ||
-    text.includes('frozen') ||
-    text.includes('refreeze') ||
-    text.includes('thaw') ||
-    text.includes('-18')
-  );
-  const hasPreparationSignal = (
-    text.includes('open') ||
-    text.includes('pour') ||
-    text.includes('add ') ||
-    text.includes('water') ||
-    text.includes('boil') ||
-    text.includes('cook') ||
-    text.includes('heat') ||
-    text.includes('microwave') ||
-    text.includes('fry') ||
-    text.includes('oven') ||
-    text.includes('stir') ||
-    text.includes('serve') ||
-    text.includes('mix')
-  );
-
-  return hasStorageSignal && !hasPreparationSignal;
-}
-
-function cleanDirectionForUse(value) {
-  const text = cleanCell(value);
-  return isStorageOnlyDirection(text) ? '' : text;
-}
-
 function valueRightOfLabel(rows, labelMatchers, options = {}) {
   const { start = 0, maxOffset = 8 } = options;
   const tests = Array.isArray(labelMatchers) ? labelMatchers : [labelMatchers];
@@ -316,7 +279,7 @@ export function parseSpecification(specPath) {
       expirationExample: valueRightOfLabel(rows, 'Example notation expiration date'),
       lotBatchCode: valueRightOfLabel(rows, 'Lot/Batch/Production number'),
       directionForUseRaw: rawDirectionForUse,
-      directionForUse: cleanDirectionForUse(rawDirectionForUse),
+      directionForUse: cleanCell(rawDirectionForUse),
       warning: [specWarning, ingredientParts.warnings].filter(isMeaningful).join(' '),
       unopenedTemperature: valueRightOfLabel(rows, 'Storage temperature (unopened)'),
       unopenedAdvice: valueRightOfLabel(rows, 'Storage advice (unopened)'),
