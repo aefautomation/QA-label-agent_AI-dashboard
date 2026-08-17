@@ -3,3 +3,8 @@ node_modules/
 tmp/
 outputs/
 *.log
+
+# Bedrijfsdata: de vertalingendatabase en de labelsjablonen. Die leven nu in
+# Supabase (tabel translation_terms en bucket label-templates), niet in Git.
+# Zie scripts/import-translation-db.js en scripts/setup-storage.js.
+src/uploads/

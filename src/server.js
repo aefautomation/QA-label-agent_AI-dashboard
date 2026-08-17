@@ -3,7 +3,7 @@ import express from 'express';
 import multer from 'multer';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { getConfig } from './config.js';
+import { getConfig, hasSharePointConfig, hasSupabaseConfig } from './config.js';
 import { makeRunId, runLabelJob } from './labelAgent.js';
 
 const config = getConfig();
@@ -91,11 +91,17 @@ function startAsyncLabelJob({ runId, jobArgs }) {
 }
 
 app.get('/health', (_req, res) => {
+  const supabaseConfigured = hasSupabaseConfig(config);
+
   res.json({
     ok: true,
     service: 'label-agent',
     time: new Date().toISOString(),
-    sharePointConfigured: Boolean(config.sharePoint.tenantId && config.sharePoint.clientId && config.sharePoint.clientSecret && (config.sharePoint.siteId || (config.sharePoint.teams.teamId && config.sharePoint.teams.channelId))),
+    // Which backend a run will use: Supabase wins when configured.
+    storageBackend: supabaseConfigured ? 'supabase-storage' : 'sharepoint',
+    supabaseConfigured,
+    openaiConfigured: Boolean(config.openai.apiKey),
+    sharePointConfigured: hasSharePointConfig(config),
     teamsChannelFolderConfigured: Boolean(config.sharePoint.teams.teamId && config.sharePoint.teams.channelId)
   });
 });
@@ -138,15 +144,20 @@ app.post('/labels', requireAuth, upload.any(), async (req, res, next) => {
   try {
     const specFile = pickSpecFile(req.files);
     const sharePointSpecPath = req.body.sharePointSpecPath || req.body.specSharePointPath || '';
+    // The AEF AI Platform may upload the spec to Storage itself and pass the path.
+    const storageSpecPath = req.body.storageSpecPath || req.body.supabaseSpecPath || '';
     const source = {
-      kind: sharePointSpecPath ? 'sharepoint' : 'multipart',
+      kind: storageSpecPath ? 'storage' : sharePointSpecPath ? 'sharepoint' : 'multipart',
       originalFileName: specFile?.originalname || '',
       emailSubject: req.body.emailSubject || req.body.subject || '',
-      makeScenarioId: req.body.scenarioId || ''
+      makeScenarioId: req.body.scenarioId || '',
+      // Set by the platform so the agent can write back to the right run.
+      labelRunId: req.body.labelRunId || ''
     };
     const jobArgs = {
       specPath: specFile?.path,
       sharePointSpecPath,
+      storageSpecPath,
       source,
       config
     };

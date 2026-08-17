@@ -44,6 +44,13 @@ export function getConfig() {
     publicBaseUrl: env('PUBLIC_BASE_URL'),
     webhookSecret: env('MAKE_WEBHOOK_SECRET'),
     tmpRoot: path.join(cwd, 'tmp'),
+    // AEF AI Platform database. When configured, the approved translations are
+    // read from translation_terms/translation_term_values instead of the
+    // SharePoint workbook Labels_13_talen.xlsx.
+    supabase: {
+      url: env('SUPABASE_URL') || env('NEXT_PUBLIC_SUPABASE_URL'),
+      serviceRoleKey: env('SUPABASE_SERVICE_ROLE_KEY')
+    },
     openai: {
       apiKey: env('OPENAI_API_KEY'),
       model: env('OPENAI_MODEL', 'gpt-5-mini'),
@@ -77,6 +84,10 @@ export function getConfig() {
       }
     }
   };
+}
+
+export function hasSupabaseConfig(config = getConfig()) {
+  return Boolean(config.supabase.url && config.supabase.serviceRoleKey);
 }
 
 export function hasSharePointConfig(config = getConfig()) {

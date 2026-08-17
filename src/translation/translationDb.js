@@ -60,7 +60,8 @@ function rowToTranslations(row, columns) {
   return translations;
 }
 
-function lookupVariants(text) {
+// Exported so the Supabase-backed loader uses the exact same variant rules.
+export function lookupVariants(text) {
   const raw = String(text ?? '').trim();
   const variants = new Set([raw]);
   if (!raw) return [];
