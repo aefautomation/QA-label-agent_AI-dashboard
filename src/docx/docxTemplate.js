@@ -255,10 +255,10 @@ function fieldColor(field) {
 }
 
 function fieldStyle(field) {
-  return {
-    red: fieldRed(field),
-    color: fieldColor(field)
-  };
+  const color = fieldColor(field);
+  return color
+    ? { red: fieldRed(field), color }
+    : { red: fieldRed(field) };
 }
 
 function fieldLanguageSegments(field, languageCode) {
@@ -521,6 +521,7 @@ function createParagraphReplacer({ spec, translations, skipHeaderMetadata = fals
 
     if (/\bX\b/.test(text) && directionKeywords.some((keyword) => normalized.includes(keyword))) {
       const direction = fieldText(translations.direction, currentLanguage);
+      if (!isMeaningful(direction)) return { text: '', red: false };
       return applyInlineLanguageState(
         inlineLanguageHeadingReplacement(
           replacePlaceholder(text, direction),
