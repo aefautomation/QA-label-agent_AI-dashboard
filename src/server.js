@@ -152,7 +152,9 @@ app.post('/labels', requireAuth, upload.any(), async (req, res, next) => {
       emailSubject: req.body.emailSubject || req.body.subject || '',
       makeScenarioId: req.body.scenarioId || '',
       // Set by the platform so the agent can write back to the right run.
-      labelRunId: req.body.labelRunId || ''
+      labelRunId: req.body.labelRunId || '',
+      // Used when the agent has to create the label_runs row itself.
+      createdBy: req.body.createdBy || req.body.requestedBy || ''
     };
     const jobArgs = {
       specPath: specFile?.path,
