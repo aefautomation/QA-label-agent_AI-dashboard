@@ -10,6 +10,7 @@
 // own compactKey(), so normalized_key is already the lookup key.
 import { createClient } from '@supabase/supabase-js';
 import { LANGUAGES } from '../config.js';
+import { ISO_TO_AGENT } from '../utils/languages.js';
 import { compactKey, isMeaningful } from '../utils/normalize.js';
 import { lookupVariants } from './translationDb.js';
 
@@ -22,24 +23,9 @@ const SOURCE_LANGUAGE = 'en';
 const PAGE_SIZE = 1000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
-// ISO 639-1 in the database -> the language codes this agent and the DOCX
-// templates use. Note SE/DK/CZ are the agent's historical (non-ISO) codes.
-const ISO_TO_AGENT_CODE = {
-  en: 'EN',
-  de: 'DE',
-  nl: 'NL',
-  fr: 'FR',
-  sv: 'SE',
-  fi: 'FI',
-  da: 'DK',
-  it: 'IT',
-  cs: 'CZ',
-  hu: 'HU',
-  pl: 'PL',
-  es: 'ES',
-  sk: 'SK'
-  // 'no' (Norwegian) exists in the database but is not a label language.
-};
+// 'no' (Norwegian) exists in the database but is not a label language, so it is
+// simply absent from ISO_TO_AGENT and gets skipped below.
+const ISO_TO_AGENT_CODE = ISO_TO_AGENT;
 
 let cache = null;
 

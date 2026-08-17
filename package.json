@@ -5,10 +5,14 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --env-file-if-exists=.env --watch src/server.js",
+    "selftest": "node --env-file-if-exists=.env scripts/selftest-storage.js",
+    "run-local": "node --env-file-if-exists=.env scripts/run-local.js",
+    "import-translations": "node --env-file-if-exists=.env scripts/import-translation-db.js",
+    "setup-storage": "node --env-file-if-exists=.env scripts/setup-storage.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",

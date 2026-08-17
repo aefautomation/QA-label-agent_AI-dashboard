@@ -15,6 +15,8 @@ import {
   SupabaseStorageClient,
   documentObjectName
 } from './storage/supabaseStorage.js';
+import { buildPlatformLabelModel } from './platform/labelModel.js';
+import { LabelRunStore } from './platform/labelRunStore.js';
 import { appendRunLog } from './runLog.js';
 import { isMeaningful, safeFilePart } from './utils/normalize.js';
 
@@ -303,6 +305,59 @@ export async function runLabelJob({
 
   const sharePointClient = new SharePointClient(config.sharePoint);
   const storageClient = new SupabaseStorageClient(config.supabase);
+
+  // Platform bookkeeping. The row is created up front so a failure halfway is
+  // visible to QA instead of silently disappearing.
+  const runStore = new LabelRunStore(config.supabase);
+  let runRowId = null;
+
+  if (runStore.enabled) {
+    runRowId = await runStore.ensureRun({
+      labelRunId: source.labelRunId,
+      agentRunId: runId,
+      uploadedFileName: source.originalFileName,
+      createdBy: source.createdBy
+    });
+    await runStore.markRunning({ runRowId, agentRunId: runId });
+  }
+
+  try {
+    return await executeLabelJob({
+      runId,
+      timestamp,
+      runDir,
+      specPath,
+      sharePointSpecPath,
+      storageSpecPath,
+      source,
+      config,
+      useSupabase,
+      sharePointClient,
+      storageClient,
+      runStore,
+      runRowId
+    });
+  } catch (error) {
+    await runStore.markFailed({ runRowId, message: error.message });
+    throw error;
+  }
+}
+
+async function executeLabelJob({
+  runId,
+  timestamp,
+  runDir,
+  specPath,
+  sharePointSpecPath,
+  storageSpecPath,
+  source,
+  config,
+  useSupabase,
+  sharePointClient,
+  storageClient,
+  runStore,
+  runRowId
+}) {
   const resolvedSpecPath = await resolveSpecPath({
     sharePointSpecPath,
     storageSpecPath,
@@ -422,23 +477,47 @@ export async function runLabelJob({
     await appendRunLog({ run, config, sharePointClient });
   }
 
+  const documents = {
+    backend: useSupabase ? 'supabase-storage' : 'sharepoint',
+    bucket: useSupabase ? DOCUMENT_BUCKET : '',
+    input: { path: sharePointSpecPath || archivedSpec.path, webUrl: archivedSpec.webUrl },
+    label: labelLocation,
+    report: reportLocation
+  };
+
+  // The reviewable label model: this is what QA edits in the platform, instead
+  // of editing the Word document.
+  const platformModel = buildPlatformLabelModel({
+    spec,
+    translations,
+    documents,
+    emailReport
+  });
+
+  if (runStore.enabled && runRowId) {
+    await runStore.writeResult({
+      runRowId,
+      agentRunId: runId,
+      spec,
+      platformModel,
+      documents
+    });
+  }
+
   await fs.rm(runDir, { recursive: true, force: true });
 
   return {
     runId,
+    labelRunId: runRowId,
     timestamp,
     templateType: spec.templateType,
     articleNumber: spec.articleNumber,
     legalProduct: spec.legalProduct,
     // Backend-neutral locations. Storage paths are private; the platform signs
     // them on demand when a QA employee opens a document.
-    documents: {
-      backend: useSupabase ? 'supabase-storage' : 'sharepoint',
-      bucket: useSupabase ? DOCUMENT_BUCKET : '',
-      input: { path: sharePointSpecPath || archivedSpec.path, webUrl: archivedSpec.webUrl },
-      label: labelLocation,
-      report: reportLocation
-    },
+    documents,
+    // The reviewable model, also written to label_runs/label_review_items.
+    platformModel,
     // Kept for the existing Make/email flow.
     sharePointInputPath: sharePointSpecPath || archivedSpec.path,
     sharePointInputWebUrl: archivedSpec.webUrl,
