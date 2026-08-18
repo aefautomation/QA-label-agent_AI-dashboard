@@ -274,64 +274,69 @@ function buildTranslationFields(translations) {
 }
 
 /**
- * Keeps only the longest form of each term.
+ * The terms that are actually marked in the rendered declaration.
  *
- * The terminology extractor also emits the parts of a compound ("Protein" and
- * "Preparation" next to "Liquid Protein Preparation"). Every term becomes 13
- * review rows, so the fragments would triple the review work while adding
- * nothing to the translation database.
+ * Derived from the segments rather than from source.unmatchedTerms: the
+ * extractor proposes more terms than end up as a span (overlapping ones lose),
+ * so using that list produced groups for words that appear nowhere — and left
+ * marked words without a group, which made them dead clicks.
  */
-function maximalTerms(terms) {
-  const cleaned = [];
-  const seen = new Set();
+function markedTerms(job) {
+  const terms = new Map();
 
-  for (const raw of terms) {
-    const term = text(raw);
-    if (!term) continue;
+  for (const segments of Object.values(job?.languageSegments ?? {})) {
+    for (const segment of segments ?? []) {
+      const tone = segment.tone || (segment.red ? 'red' : '');
+      const term = text(segment.term);
+      if (!tone || !term) continue;
 
-    const key = normalizeText(term);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    cleaned.push(term);
+      const key = normalizeText(term);
+      // Uncertain wins over confident: if the same term is red anywhere, it
+      // needs the stricter treatment.
+      const existing = terms.get(key);
+      if (!existing || (existing.tone === 'purple' && tone === 'red')) {
+        terms.set(key, { term, tone });
+      }
+    }
   }
 
-  const padded = (value) => ` ${normalizeText(value).replace(/[^a-z0-9]+/g, ' ').trim()} `;
-
-  return cleaned.filter((term) => {
-    const needle = padded(term);
-    return !cleaned.some(
-      (other) => other.length > term.length && padded(other).includes(needle)
-    );
-  });
+  return [...terms.values()];
 }
 
-/**
- * One group per ingredient term that had no exact database hit, with the AI's
- * proposal per language.
- *
- * This is the point of the whole exercise: a full declaration never recurs on
- * another product, but "protein isolate" or "rice vinegar" does. Approving these
- * is what makes the next label greener.
- */
 function buildTermFields(translations) {
   const job = translations?.ingredients;
-  const unmatched = maximalTerms(job?.source?.unmatchedTerms ?? []);
-  if (unmatched.length === 0) return [];
+  const marked = markedTerms(job);
+  if (marked.length === 0) return [];
 
   const termTranslations = job.termTranslations ?? {};
   const fields = [];
 
-  for (const term of unmatched) {
+  for (const { term, tone } of marked) {
     const sourceTerm = text(term);
     if (!sourceTerm) continue;
 
-    const proposal = termTranslations[term] ?? termTranslations[sourceTerm] ?? null;
+    const proposal =
+      termTranslations[term] ??
+      termTranslations[sourceTerm] ??
+      // The extractor may have registered a spelling variant of the span.
+      Object.entries(termTranslations).find(
+        ([key]) => normalizeText(key) === normalizeText(sourceTerm)
+      )?.[1] ??
+      null;
     const confidence = Number(proposal?.confidenceScore);
-    const grade = !proposal
-      ? { colorStatus: 'red', source: 'ai_uncertain', confidence: null }
-      : proposal.confident
-        ? { colorStatus: 'purple', source: 'ai_high', confidence: Number.isFinite(confidence) ? confidence : null }
-        : { colorStatus: 'red', source: 'ai_uncertain', confidence: Number.isFinite(confidence) ? confidence : null };
+    // The tone in the rendered label is the truth: that is what QA sees.
+    const grade =
+      tone === 'purple'
+        ? {
+            colorStatus: 'purple',
+            source: 'ai_high',
+            confidence: Number.isFinite(confidence) ? confidence : null
+          }
+        : {
+            colorStatus: 'red',
+            source: 'ai_uncertain',
+            confidence: Number.isFinite(confidence) ? confidence : null
+          };
 
     const groupKey = `term:${slugify(sourceTerm)}`;
 

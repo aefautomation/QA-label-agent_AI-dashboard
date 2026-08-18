@@ -193,9 +193,15 @@ function unknownTermsFromDatabaseGaps(sourceText, translationDb) {
 
 function pushGapSegment(segments, text) {
   if (!text) return;
+  const needsReview = isReviewText(text);
   segments.push({
     text,
-    red: isReviewText(text)
+    red: needsReview,
+    // Source text that matched no term at all. Marked, but there is no term
+    // to open, so the platform shows it as flagged without making it
+    // clickable.
+    tone: needsReview ? 'red' : '',
+    term: ''
   });
 }
 
@@ -217,6 +223,10 @@ function sourceSegmentsForLanguage(sourceText, spans, languageCode) {
       text: String(replacement || span.sourceTerm).trim(),
       red: Boolean(span.red),
       color: span.color || '',
+      // Explicit tint. A confident AI term is purple with red=false, so a
+      // reader that only looks at `red` would render it as if it came from
+      // the approved database.
+      tone: span.red ? 'red' : span.color ? 'purple' : '',
       // The English source term this part came from. The platform needs it to
       // link a translated word back to the term it belongs to.
       term: span.sourceTerm || ''
@@ -297,7 +307,7 @@ function buildExactTranslationSegments(translations) {
   return Object.fromEntries(
     LANGUAGES.map((language) => {
       const text = translations?.[language.code] || translations?.EN || '';
-      return [language.code, text ? [{ text, red: false, term: '' }] : []];
+      return [language.code, text ? [{ text, red: false, tone: '', term: '' }] : []];
     })
   );
 }
