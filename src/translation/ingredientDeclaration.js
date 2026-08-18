@@ -129,11 +129,26 @@ function mergeSegments(segments) {
     if (!segment?.text) continue;
     const red = Boolean(segment.red);
     const color = segment.color || '';
+    const tone = segment.tone || '';
+    const term = segment.term || '';
     const previous = merged.at(-1);
-    if (previous && previous.red === red && (previous.color || '') === color) {
+    // Merge only when the identity is the same, and carry that identity along.
+    //
+    // Both halves matter to the platform. Dropping tone/term here made every
+    // marked word unopenable, because the platform links a translated word back
+    // to its English term through `term`. And merging on red+color alone glued
+    // an approved database term (red=false, no color) into the plain text next
+    // to it, so it stopped existing as a separate word entirely.
+    const sameIdentity =
+      previous &&
+      previous.red === red &&
+      (previous.color || '') === color &&
+      (previous.tone || '') === tone &&
+      (previous.term || '') === term;
+    if (sameIdentity) {
       previous.text += segment.text;
     } else {
-      merged.push({ text: segment.text, red, color });
+      merged.push({ text: segment.text, red, color, tone, term });
     }
   }
   return merged;
@@ -456,7 +471,7 @@ export async function translateIngredientsDeclaration({
     translations: hasUnknownTerms ? translated.translations : { ...translated.translations, EN: cleanSource },
     languageSegments: hasUnknownTerms
       ? translated.languageSegments
-      : { ...translated.languageSegments, EN: [{ text: cleanSource, red: false }] },
+      : { ...translated.languageSegments, EN: [{ text: cleanSource, red: false, tone: '', term: '' }] },
     reviewRequired: hasUnknownTerms,
     reviewReason: hasUnknownTerms
       ? 'Ingredientendeclaratie is gedeeltelijk uit Labels_13_talen.xlsx opgebouwd; onbekende samengestelde termen vereisen juridische QA.'
