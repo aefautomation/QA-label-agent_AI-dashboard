@@ -154,7 +154,11 @@ function knownSourceSpans(sourceText, translationDb) {
           start: match.index,
           end: match.index + match[0].length,
           sourceTerm: match[0],
-          entry
+          entry,
+          // A term straight from the approved database. Flagged green so the
+          // platform can show and open it too: QA may want to correct a
+          // stored translation.
+          fromDatabase: true
         });
       }
     }
@@ -226,7 +230,7 @@ function sourceSegmentsForLanguage(sourceText, spans, languageCode) {
       // Explicit tint. A confident AI term is purple with red=false, so a
       // reader that only looks at `red` would render it as if it came from
       // the approved database.
-      tone: span.red ? 'red' : span.color ? 'purple' : '',
+      tone: span.red ? 'red' : span.color ? 'purple' : span.fromDatabase ? 'green' : '',
       // The English source term this part came from. The platform needs it to
       // link a translated word back to the term it belongs to.
       term: span.sourceTerm || ''

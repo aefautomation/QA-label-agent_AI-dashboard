@@ -281,22 +281,29 @@ function buildTranslationFields(translations) {
  * so using that list produced groups for words that appear nowhere — and left
  * marked words without a group, which made them dead clicks.
  */
+const TONE_RANK = { green: 0, purple: 1, red: 2 };
+
 function markedTerms(job) {
   const terms = new Map();
 
-  for (const segments of Object.values(job?.languageSegments ?? {})) {
+  for (const [agentCode, segments] of Object.entries(job?.languageSegments ?? {})) {
     for (const segment of segments ?? []) {
       const tone = segment.tone || (segment.red ? 'red' : '');
       const term = text(segment.term);
       if (!tone || !term) continue;
 
       const key = normalizeText(term);
-      // Uncertain wins over confident: if the same term is red anywhere, it
-      // needs the stricter treatment.
-      const existing = terms.get(key);
-      if (!existing || (existing.tone === 'purple' && tone === 'red')) {
-        terms.set(key, { term, tone });
-      }
+      const existing = terms.get(key) ?? { term, tone, values: {} };
+
+      // The strictest tint the term carries anywhere wins: red beats purple
+      // beats green.
+      if (TONE_RANK[tone] > TONE_RANK[existing.tone]) existing.tone = tone;
+
+      // The rendered text per language is the value to review — the same
+      // source for database terms, AI terms and uncertain ones alike.
+      existing.values[agentCode] ??= text(segment.text);
+
+      terms.set(key, existing);
     }
   }
 
@@ -311,7 +318,7 @@ function buildTermFields(translations) {
   const termTranslations = job.termTranslations ?? {};
   const fields = [];
 
-  for (const { term, tone } of marked) {
+  for (const { term, tone, values } of marked) {
     const sourceTerm = text(term);
     if (!sourceTerm) continue;
 
@@ -326,25 +333,32 @@ function buildTermFields(translations) {
     const confidence = Number(proposal?.confidenceScore);
     // The tone in the rendered label is the truth: that is what QA sees.
     const grade =
-      tone === 'purple'
-        ? {
-            colorStatus: 'purple',
-            source: 'ai_high',
-            confidence: Number.isFinite(confidence) ? confidence : null
-          }
-        : {
-            colorStatus: 'red',
-            source: 'ai_uncertain',
-            confidence: Number.isFinite(confidence) ? confidence : null
-          };
+      tone === 'green'
+        ? { colorStatus: 'green', source: 'database', confidence: null }
+        : tone === 'purple'
+          ? {
+              colorStatus: 'purple',
+              source: 'ai_high',
+              confidence: Number.isFinite(confidence) ? confidence : null
+            }
+          : {
+              colorStatus: 'red',
+              source: 'ai_uncertain',
+              confidence: Number.isFinite(confidence) ? confidence : null
+            };
 
     const groupKey = `term:${slugify(sourceTerm)}`;
 
     for (const [agentCode, iso] of Object.entries(AGENT_TO_ISO)) {
-      // Without an AI proposal the English term is copied, which is a starting
-      // point for QA rather than a translation.
-      const raw = proposal?.translations?.[agentCode];
-      const value = text(raw) === sourceTerm && iso !== 'en' ? null : text(raw);
+      // Prefer what is actually rendered on the label; fall back to the AI
+      // proposal. A value equal to the English source term in a non-English
+      // language means nothing was translated — show it as empty so QA fills
+      // it in rather than approving an English word as Dutch.
+      const raw = values?.[agentCode] ?? proposal?.translations?.[agentCode];
+      const value =
+        tone !== 'green' && text(raw) === sourceTerm && iso !== 'en'
+          ? null
+          : text(raw);
 
       fields.push(
         field({
@@ -359,10 +373,11 @@ function buildTermFields(translations) {
           confidence: grade.confidence,
           source: value ? grade.source : 'ai_uncertain',
           message: null,
-          // The declaration itself is not reviewable, so these terms are the only
+          // The declaration itself is not reviewable, so AI terms are the only
           // gate on it: an uncertain ingredient term must be checked before the
-          // label can be finalized.
-          required: true,
+          // label can be finalized. A term from the approved database is
+          // already approved — visible and editable, but not blocking.
+          required: tone !== 'green',
           groupKey
         })
       );
