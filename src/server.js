@@ -3,7 +3,7 @@ import express from 'express';
 import multer from 'multer';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { getConfig, hasSharePointConfig, hasSupabaseConfig } from './config.js';
+import { env, getConfig, hasSharePointConfig, hasSupabaseConfig } from './config.js';
 import { makeRunId, runLabelJob } from './labelAgent.js';
 
 const config = getConfig();
@@ -23,6 +23,23 @@ app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 const jobs = new Map();
+
+/**
+ * What this build can do, reported by /health.
+ *
+ * Without it there is no way to tell from the outside whether a deploy
+ * actually landed — which cost real debugging time: a run looked broken while
+ * the platform was simply talking to an older build.
+ * Add an entry when the contract with the AEF AI Platform changes.
+ */
+const BUILD_FEATURES = [
+  'supabase-storage',
+  'supabase-write-back',
+  'readonly-declaration',
+  'segment-tone',
+  'segment-term',
+  'term-groups'
+];
 
 function requireAuth(req, res, next) {
   if (!config.webhookSecret) return next();
@@ -99,6 +116,12 @@ app.get('/health', (_req, res) => {
     time: new Date().toISOString(),
     // Which backend a run will use: Supabase wins when configured.
     storageBackend: supabaseConfigured ? 'supabase-storage' : 'sharepoint',
+    // Verifiable deploy identity: compare this with the commit you pushed.
+    build: {
+      commit: (env('RAILWAY_GIT_COMMIT_SHA') || '').slice(0, 7) || 'unknown',
+      branch: env('RAILWAY_GIT_BRANCH') || 'unknown',
+      features: BUILD_FEATURES
+    },
     supabaseConfigured,
     openaiConfigured: Boolean(config.openai.apiKey),
     sharePointConfigured: hasSharePointConfig(config),
