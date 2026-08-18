@@ -88,6 +88,12 @@ async function main() {
   console.log(`velden        : ${model.labelModel.fields.length}`);
   console.log(`reviewpunten  : ${model.reviewItems.length}`);
   console.log(`verplicht     : ${model.reviewItems.filter((item) => item.required).length}`);
+  const ro = model.labelModel.fields.filter((f) => f.readOnly);
+  console.log(`readOnly velden: ${ro.length} (alleen tonen, niet bewerken)`);
+  const declItems = model.reviewItems.filter((i) => i.groupKey === 'ingredients');
+  console.log(`declaratie als reviewpunt: ${declItems.length} (moet 0 zijn)`);
+  const termItems = model.reviewItems.filter((i) => String(i.groupKey).startsWith('term:'));
+  console.log(`termpunten: ${termItems.length}, verplicht: ${termItems.filter(i => i.required).length}`);
 
   const bySection = new Map();
   for (const item of model.reviewItems) {

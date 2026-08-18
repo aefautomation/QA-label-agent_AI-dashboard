@@ -91,7 +91,8 @@ function field({
   message = null,
   required = false,
   groupKey = null,
-  segments = null
+  segments = null,
+  readOnly = false
 }) {
   return {
     key,
@@ -110,7 +111,10 @@ function field({
     // specification and its translations share one groupKey.
     groupKey,
     // Declaration split per term, each flagged when uncertain.
-    segments: Array.isArray(segments) && segments.length > 0 ? segments : null
+    segments: Array.isArray(segments) && segments.length > 0 ? segments : null,
+    // Shown on the label but not editable: an assembled value, whose parts are
+    // reviewed individually.
+    readOnly
   };
 }
 
@@ -224,6 +228,7 @@ function buildTranslationFields(translations) {
 
     const meta = JOB_META[jobKey] ?? { section: 'other', category: 'general', fieldKey: null };
     const grade = gradeTranslation(job);
+    const isAssembled = jobKey === 'ingredients';
     const sourceText = text(job.sourceText);
     const groupSlug = slugify(sourceText ?? job.fieldName ?? jobKey);
 
@@ -250,8 +255,12 @@ function buildTranslationFields(translations) {
           message: missing
             ? `Geen vertaling geproduceerd voor ${isoLanguageLabel(iso)}.`
             : null,
-          required: missing || grade.colorStatus !== 'green',
+          required: isAssembled ? false : missing || grade.colorStatus !== 'green',
           groupKey: jobKey,
+          // The ingredient declaration is assembled from database terms plus AI
+          // terms. Editing the whole string would overwrite that composition, so
+          // QA reviews the individual terms instead (see buildTermFields).
+          readOnly: isAssembled,
           // Per-term breakdown of the ingredient declaration: each part carries a
           // red flag when that term had no exact database hit, so QA reviews a
           // handful of words instead of re-reading the whole declaration.
@@ -345,9 +354,10 @@ function buildTermFields(translations) {
           confidence: grade.confidence,
           source: value ? grade.source : 'ai_uncertain',
           message: null,
-          // Not blocking: a label must be able to ship even when the term library
-          // is not complete yet. Approving them is how the database grows.
-          required: false,
+          // The declaration itself is not reviewable, so these terms are the only
+          // gate on it: an uncertain ingredient term must be checked before the
+          // label can be finalized.
+          required: true,
           groupKey
         })
       );
@@ -471,9 +481,13 @@ export function buildPlatformLabelModel({ spec, translations, documents, emailRe
   const groupedLanguages = new Set(
     fields.filter((entry) => entry.groupKey && entry.languageCode).map((entry) => entry.groupKey)
   );
-  const reviewableFields = fields.filter(
-    (entry) => !(entry.groupKey && !entry.languageCode && groupedLanguages.has(entry.groupKey))
-  );
+  const reviewableFields = fields.filter((entry) => {
+    // Assembled values are display-only; their parts carry the review.
+    if (entry.readOnly) return false;
+    // A field that only carries the English source of a translation group is not
+    // a review point of its own either.
+    return !(entry.groupKey && !entry.languageCode && groupedLanguages.has(entry.groupKey));
+  });
 
   const uniqueItems = makeUniqueBy(
     [...reviewableFields.map(fieldToReviewItem), ...buildExtraReviewItems({ spec, translations })],
