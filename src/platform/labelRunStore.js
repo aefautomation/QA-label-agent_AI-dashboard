@@ -168,6 +168,8 @@ export class LabelRunStore {
       confidence_source: item.source,
       required: item.required,
       message: item.message,
+      group_key: item.groupKey ?? null,
+      segments: item.segments ?? null,
       updated_at: now
     }));
 

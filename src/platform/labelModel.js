@@ -16,7 +16,8 @@
 import { AGENT_TO_ISO, isoLanguageLabel } from '../utils/languages.js';
 import { isMeaningful, normalizeText } from '../utils/normalize.js';
 
-const GREEN_STATUSES = new Set(['database']);
+// Fully from the approved translation database, so trusted.
+const GREEN_STATUSES = new Set(['database', 'database_terms']);
 const RESEARCH_STATUSES = new Set(['openai_researched', 'openai_terms_researched']);
 const SKIP_STATUSES = new Set(['empty', 'not_applicable']);
 // The ingredient declaration was assembled from database terms, but it contained
@@ -88,7 +89,9 @@ function field({
   confidence = null,
   source = 'database',
   message = null,
-  required = false
+  required = false,
+  groupKey = null,
+  segments = null
 }) {
   return {
     key,
@@ -102,27 +105,52 @@ function field({
     confidence,
     source,
     message,
-    required
+    required,
+    // Which label field this belongs to: the English source from the
+    // specification and its translations share one groupKey.
+    groupKey,
+    // Declaration split per term, each flagged when uncertain.
+    segments: Array.isArray(segments) && segments.length > 0 ? segments : null
   };
 }
 
 /**
+ * Which translation job a specification field is the English source of. Sharing
+ * the groupKey puts the source and its 13 translations in one group in the QA
+ * panel, instead of scattering the same declaration over two sections.
+ */
+const SPEC_FIELD_GROUPS = {
+  legal_name: 'productName',
+  ingredients: 'ingredients',
+  origin: 'origin',
+  preparation: 'direction',
+  warnings: 'warning',
+  catch_area: 'fishingArea',
+  fishing_gear: 'fishingMethod',
+  production_method: 'productionMethod'
+};
+
+/**
  * Values taken straight from the supplier specification. They are not AI output,
  * so they are green — but the legally identifying ones still need a QA tick.
+ *
+ * No explanatory message is attached: "from the specification" is already implied
+ * by the green/database badge, and repeating it on every field only makes the
+ * review panel noisier.
  */
 function buildSpecFields(spec) {
   const rows = [
     ['article_number', 'Artikelnummer', 'identification', 'general', spec.articleNumber, true],
     ['product_name', 'Productnaam', 'identification', 'legal_product', spec.description || spec.legalProduct, true],
-    ['legal_name', 'Wettelijke benaming (EN)', 'identification', 'legal_product', spec.legalProduct, true],
+    ['legal_name', 'Wettelijke benaming', 'identification', 'legal_product', spec.legalProduct, true],
     ['brand', 'Merk', 'identification', 'general', spec.brand, false],
     ['supplier', 'Leveranciersnummer', 'identification', 'general', spec.supplierNumber, false],
     ['origin', 'Land van productie', 'identification', 'origin', spec.countryOfProduction, false],
     ['net_weight', 'Nettogewicht', 'identification', 'general', spec.logistics?.netWeight, true],
     ['ean', 'EAN', 'identification', 'general', spec.logistics?.ean, false],
-    ['ingredients', 'Ingrediëntendeclaratie (EN)', 'composition', 'ingredient', spec.ingredientsDeclaration, true],
-    ['preparation', 'Bereidingswijze (EN)', 'preparation', 'preparation', spec.storage?.directionForUse, false],
-    ['warnings', 'Waarschuwing (EN)', 'warnings', 'warning', spec.storage?.warning, false],
+    ['ingredients', 'Ingrediëntendeclaratie', 'composition', 'ingredient', spec.ingredientsDeclaration, true],
+    ['preparation', 'Bereidingswijze', 'preparation', 'preparation', spec.storage?.directionForUse, false],
+    ['warnings', 'Waarschuwing', 'warnings', 'warning', spec.storage?.warning, false],
     ['catch_area', 'Vangstgebied', 'fishery', 'fishery', spec.fish?.fishingArea || spec.fish?.fao, false],
     ['fishing_gear', 'Vangstmethode', 'fishery', 'fishery', spec.fish?.fishingMethod, false],
     ['scientific_name', 'Wetenschappelijke naam', 'fishery', 'fishery', spec.fish?.scientificName, false],
@@ -138,8 +166,8 @@ function buildSpecFields(spec) {
         section,
         category,
         value,
-        message: 'Rechtstreeks uit de productspecificatie (sheet 2. BASIC).',
-        required
+        required,
+        groupKey: SPEC_FIELD_GROUPS[key] ?? null
       })
     );
 }
@@ -171,8 +199,7 @@ function buildNutrition(spec) {
         label: `${label} (per 100 g)`,
         section: 'nutrition',
         category: 'nutrition',
-        value,
-        message: 'Rechtstreeks uit de productspecificatie.'
+        value
       })
     );
   }
@@ -187,7 +214,7 @@ function buildTranslationFields(translations) {
   for (const [jobKey, job] of Object.entries(translations ?? {})) {
     if (!job || SKIP_STATUSES.has(String(job.status))) continue;
 
-    const meta = JOB_META[jobKey] ?? { section: 'translations', category: 'general', fieldKey: null };
+    const meta = JOB_META[jobKey] ?? { section: 'other', category: 'general', fieldKey: null };
     const grade = gradeTranslation(job);
     const sourceText = text(job.sourceText);
     const groupSlug = slugify(sourceText ?? job.fieldName ?? jobKey);
@@ -202,7 +229,9 @@ function buildTranslationFields(translations) {
         field({
           key: `translation.${groupSlug}.${iso}`,
           label: `${job.fieldName ?? jobKey} — ${isoLanguageLabel(iso)}`,
-          section: 'translations',
+          // Live in the section of the field they translate, not in a separate
+          // "translations" bucket: everything about one declaration together.
+          section: meta.section,
           category: meta.category,
           value,
           languageCode: iso,
@@ -212,8 +241,13 @@ function buildTranslationFields(translations) {
           source: missing ? 'ai_uncertain' : grade.source,
           message: missing
             ? `Geen vertaling geproduceerd voor ${isoLanguageLabel(iso)}.`
-            : (job.reviewReason || null),
-          required: missing || grade.colorStatus !== 'green'
+            : null,
+          required: missing || grade.colorStatus !== 'green',
+          groupKey: jobKey,
+          // Per-term breakdown of the ingredient declaration: each part carries a
+          // red flag when that term had no exact database hit, so QA reviews a
+          // handful of words instead of re-reading the whole declaration.
+          segments: job.languageSegments?.[agentCode] ?? null
         })
       );
     }
@@ -238,7 +272,9 @@ function fieldToReviewItem(labelField) {
     source: labelField.source,
     status: 'open',
     required: labelField.required,
-    message: labelField.message
+    message: labelField.message,
+    groupKey: labelField.groupKey,
+    segments: labelField.segments
   };
 }
 
@@ -289,6 +325,7 @@ function buildExtraReviewItems({ spec, translations }) {
       confidence: null,
       source: 'ai_uncertain',
       status: 'open',
+      groupKey: 'ingredients',
       // Context, not a separate gate: the ingredient declaration itself is a
       // required review point, and the term extractor produces some noise
       // ("White", "Preparation") that must not block finalizing a label.
@@ -316,6 +353,7 @@ function buildExtraReviewItems({ spec, translations }) {
       confidence: gradeTranslation(job).confidence,
       source: gradeTranslation(job).source,
       status: 'open',
+      groupKey: jobKey,
       // Context, not a decision: never block finalizing on a note.
       required: false,
       message: job.notes.join('\n')

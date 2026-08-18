@@ -115,7 +115,7 @@ function warningCandidates(sourceText) {
   return candidates;
 }
 
-async function buildTranslations({ spec, translationDb, openaiConfig }) {
+export async function buildTranslationsForSpec({ spec, translationDb, openaiConfig }) {
   const productContext = {
     articleNumber: spec.articleNumber,
     brand: spec.brand,
@@ -391,7 +391,7 @@ async function executeLabelJob({
     : loadTranslationDb(assets.translationDb.path);
   spec.qaWarnings.push(...translationDb.diagnostics);
 
-  const translations = await buildTranslations({
+  const translations = await buildTranslationsForSpec({
     spec,
     translationDb,
     openaiConfig: config.openai
