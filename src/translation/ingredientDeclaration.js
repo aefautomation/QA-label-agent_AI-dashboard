@@ -375,6 +375,10 @@ export async function translateIngredientsDeclaration({
         trusted: false,
         translations: translated.translations,
         languageSegments: translated.languageSegments,
+        // Per unmatched term its own translations. These are what belongs in the
+        // approved translations database — a whole declaration never recurs, its
+        // individual terms do.
+        termTranslations: fallback.termTranslations || null,
         reviewRequired: true,
         reviewReason: 'Ingredientendeclaratie bevat termen zonder exacte match in Labels_13_talen.xlsx; OpenAI/research fallback alleen voor onbekende termen gebruikt.',
         source: {
@@ -409,6 +413,7 @@ export async function translateIngredientsDeclaration({
         trusted: false,
         translations: translated.translations,
         languageSegments: translated.languageSegments,
+        termTranslations: null,
         reviewRequired: true,
         reviewReason: `Ingredientendeclaratie bevat onbekende termen en OpenAI/research faalde: ${error.message}`,
         source: {
@@ -439,6 +444,9 @@ export async function translateIngredientsDeclaration({
     reviewReason: hasUnknownTerms
       ? 'Ingredientendeclaratie is gedeeltelijk uit Labels_13_talen.xlsx opgebouwd; onbekende samengestelde termen vereisen juridische QA.'
       : '',
+    // No AI ran, so there are no proposals per term; the platform builds
+    // placeholders from unmatchedTerms so QA can still fill them in.
+    termTranslations: null,
     source: {
       type: 'database_terms',
       terminologyHits: analysis.knownTerms.length,

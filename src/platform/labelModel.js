@@ -157,8 +157,16 @@ function buildSpecFields(spec) {
     ['production_method', 'Productiemethode', 'fishery', 'fishery', spec.fish?.productionMethod, false]
   ];
 
+  const legalName = text(spec.legalProduct);
+
   return rows
-    .filter(([, , , , value]) => text(value) !== null)
+    .filter(([key, , , , value]) => {
+      if (text(value) === null) return false;
+      // product_name and legal_name collapse to the same string whenever the
+      // specification has no separate description — then showing both is noise.
+      if (key === 'product_name' && text(value) === legalName) return false;
+      return true;
+    })
     .map(([key, label, section, category, value, required]) =>
       field({
         key,
@@ -256,6 +264,99 @@ function buildTranslationFields(translations) {
   return fields;
 }
 
+/**
+ * Keeps only the longest form of each term.
+ *
+ * The terminology extractor also emits the parts of a compound ("Protein" and
+ * "Preparation" next to "Liquid Protein Preparation"). Every term becomes 13
+ * review rows, so the fragments would triple the review work while adding
+ * nothing to the translation database.
+ */
+function maximalTerms(terms) {
+  const cleaned = [];
+  const seen = new Set();
+
+  for (const raw of terms) {
+    const term = text(raw);
+    if (!term) continue;
+
+    const key = normalizeText(term);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    cleaned.push(term);
+  }
+
+  const padded = (value) => ` ${normalizeText(value).replace(/[^a-z0-9]+/g, ' ').trim()} `;
+
+  return cleaned.filter((term) => {
+    const needle = padded(term);
+    return !cleaned.some(
+      (other) => other.length > term.length && padded(other).includes(needle)
+    );
+  });
+}
+
+/**
+ * One group per ingredient term that had no exact database hit, with the AI's
+ * proposal per language.
+ *
+ * This is the point of the whole exercise: a full declaration never recurs on
+ * another product, but "protein isolate" or "rice vinegar" does. Approving these
+ * is what makes the next label greener.
+ */
+function buildTermFields(translations) {
+  const job = translations?.ingredients;
+  const unmatched = maximalTerms(job?.source?.unmatchedTerms ?? []);
+  if (unmatched.length === 0) return [];
+
+  const termTranslations = job.termTranslations ?? {};
+  const fields = [];
+
+  for (const term of unmatched) {
+    const sourceTerm = text(term);
+    if (!sourceTerm) continue;
+
+    const proposal = termTranslations[term] ?? termTranslations[sourceTerm] ?? null;
+    const confidence = Number(proposal?.confidenceScore);
+    const grade = !proposal
+      ? { colorStatus: 'red', source: 'ai_uncertain', confidence: null }
+      : proposal.confident
+        ? { colorStatus: 'purple', source: 'ai_high', confidence: Number.isFinite(confidence) ? confidence : null }
+        : { colorStatus: 'red', source: 'ai_uncertain', confidence: Number.isFinite(confidence) ? confidence : null };
+
+    const groupKey = `term:${slugify(sourceTerm)}`;
+
+    for (const [agentCode, iso] of Object.entries(AGENT_TO_ISO)) {
+      // Without an AI proposal the English term is copied, which is a starting
+      // point for QA rather than a translation.
+      const raw = proposal?.translations?.[agentCode];
+      const value = text(raw) === sourceTerm && iso !== 'en' ? null : text(raw);
+
+      fields.push(
+        field({
+          key: `${groupKey}.${iso}`,
+          label: `${sourceTerm} — ${isoLanguageLabel(iso)}`,
+          section: 'composition',
+          category: 'ingredient',
+          value,
+          languageCode: iso,
+          sourceText: sourceTerm,
+          colorStatus: value ? grade.colorStatus : 'red',
+          confidence: grade.confidence,
+          source: value ? grade.source : 'ai_uncertain',
+          message: null,
+          // Not blocking: a label must be able to ship even when the term library
+          // is not complete yet. Approving them is how the database grows.
+          required: false,
+          groupKey
+        })
+      );
+    }
+  }
+
+  return fields;
+}
+
 /** Every field becomes a review item; that is what makes the label editable. */
 function fieldToReviewItem(labelField) {
   return {
@@ -307,59 +408,6 @@ function buildExtraReviewItems({ spec, translations }) {
     });
   }
 
-  const unmatchedTerms = translations?.ingredients?.source?.unmatchedTerms ?? [];
-  for (const term of unmatchedTerms) {
-    const value = text(term);
-    if (!value) continue;
-
-    items.push({
-      itemKey: `term:${slugify(value)}`,
-      fieldKey: null,
-      title: `Ingrediëntterm zonder databasehit: ${value}`,
-      section: 'composition',
-      category: 'ingredient',
-      languageCode: null,
-      sourceText: value,
-      proposedText: value,
-      colorStatus: 'red',
-      confidence: null,
-      source: 'ai_uncertain',
-      status: 'open',
-      groupKey: 'ingredients',
-      // Context, not a separate gate: the ingredient declaration itself is a
-      // required review point, and the term extractor produces some noise
-      // ("White", "Preparation") that must not block finalizing a label.
-      required: false,
-      message:
-        'Deze term staat niet in de goedgekeurde vertalingendatabase. Controleer hem in de declaratie hierboven; keur je hem daar goed, dan gaat de vertaling de database in.'
-    });
-  }
-
-  // Notes the agent produced per field are useful context for the reviewer.
-  for (const [jobKey, job] of Object.entries(translations ?? {})) {
-    if (!job?.reviewRequired || !(job.notes ?? []).length) continue;
-
-    const meta = JOB_META[jobKey] ?? { section: 'other', category: 'general' };
-    items.push({
-      itemKey: `notes:${jobKey}`,
-      fieldKey: meta.fieldKey ?? null,
-      title: `Toelichting agent — ${job.fieldName ?? jobKey}`,
-      section: meta.section,
-      category: meta.category,
-      languageCode: null,
-      sourceText: text(job.sourceText),
-      proposedText: null,
-      colorStatus: gradeTranslation(job).colorStatus,
-      confidence: gradeTranslation(job).confidence,
-      source: gradeTranslation(job).source,
-      status: 'open',
-      groupKey: jobKey,
-      // Context, not a decision: never block finalizing on a note.
-      required: false,
-      message: job.notes.join('\n')
-    });
-  }
-
   return items;
 }
 
@@ -394,9 +442,10 @@ export function buildPlatformLabelModel({ spec, translations, documents, emailRe
   const specFields = buildSpecFields(spec);
   const { nutrition, fields: nutritionFields } = buildNutrition(spec);
   const translationFields = buildTranslationFields(translations);
+  const termFields = buildTermFields(translations);
 
   const uniqueFields = makeUniqueBy(
-    [...specFields, ...translationFields, ...nutritionFields],
+    [...specFields, ...translationFields, ...termFields, ...nutritionFields],
     (entry) => entry.key,
     (entry, key) => ({ ...entry, key })
   );
@@ -416,8 +465,18 @@ export function buildPlatformLabelModel({ spec, translations, documents, emailRe
     nutrition
   };
 
+  // A field that only carries the English source of a translation group is not a
+  // review point of its own: QA approves what goes on the label (the 13
+  // languages), and the source text is already shown in the group header.
+  const groupedLanguages = new Set(
+    fields.filter((entry) => entry.groupKey && entry.languageCode).map((entry) => entry.groupKey)
+  );
+  const reviewableFields = fields.filter(
+    (entry) => !(entry.groupKey && !entry.languageCode && groupedLanguages.has(entry.groupKey))
+  );
+
   const uniqueItems = makeUniqueBy(
-    [...fields.map(fieldToReviewItem), ...buildExtraReviewItems({ spec, translations })],
+    [...reviewableFields.map(fieldToReviewItem), ...buildExtraReviewItems({ spec, translations })],
     (item) => item.itemKey,
     (item, itemKey) => ({ ...item, itemKey })
   );
