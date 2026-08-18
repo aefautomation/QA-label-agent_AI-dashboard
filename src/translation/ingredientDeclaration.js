@@ -216,7 +216,10 @@ function sourceSegmentsForLanguage(sourceText, spans, languageCode) {
     segments.push({
       text: String(replacement || span.sourceTerm).trim(),
       red: Boolean(span.red),
-      color: span.color || ''
+      color: span.color || '',
+      // The English source term this part came from. The platform needs it to
+      // link a translated word back to the term it belongs to.
+      term: span.sourceTerm || ''
     });
     cursor = span.end;
   }
@@ -294,7 +297,7 @@ function buildExactTranslationSegments(translations) {
   return Object.fromEntries(
     LANGUAGES.map((language) => {
       const text = translations?.[language.code] || translations?.EN || '';
-      return [language.code, text ? [{ text, red: false }] : []];
+      return [language.code, text ? [{ text, red: false, term: '' }] : []];
     })
   );
 }
