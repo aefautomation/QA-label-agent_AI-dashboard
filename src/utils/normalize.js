@@ -26,6 +26,23 @@ export function compactKey(value) {
     .trim();
 }
 
+/**
+ * Writes decimals with a comma, in every language.
+ *
+ * AEF standardised on the comma for all 13 languages, English included, so the
+ * separator on a label no longer depends on how a supplier happened to type the
+ * specification. Without this, one spec produced "2.0%" on the Dutch label and
+ * another produced "2,0%" on the English one.
+ *
+ * Only a dot between two digits is touched, so E-numbers, sentence periods and
+ * abbreviations are left alone. Thousands separators are not a concern here:
+ * these specs write energy as a plain integer ("949"), never as "1.674".
+ */
+export function withDecimalComma(value) {
+  if (value === null || value === undefined) return value;
+  return String(value).replace(/(?<=\d)\.(?=\d)/g, ',');
+}
+
 export function isMeaningful(value) {
   const text = normalizeText(value);
   return Boolean(

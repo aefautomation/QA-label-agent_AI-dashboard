@@ -1,16 +1,25 @@
 // Builds ingredient declarations from trusted database terminology and marks unknown parts for review.
 import { LANGUAGES } from '../config.js';
-import { compactKey } from '../utils/normalize.js';
+import { compactKey, withDecimalComma } from '../utils/normalize.js';
+import { ingredientNames, parseIngredientParts } from './ingredientParts.js';
 import { translateIngredientTermsWithOpenAi } from './openaiFallback.js';
 
 const INGREDIENT_PREFIX = /^ingredients:\s*/i;
-const TERM_SPLIT_REGEX = /[,;.:[\](){}]+|\r?\n+/g;
-const WORD_BOUNDARY_LEFT = '(?<![\\p{L}\\p{N}])';
-const WORD_BOUNDARY_RIGHT = '(?![\\p{L}\\p{N}])';
 const AI_CONFIDENT_PURPLE = '7030A0';
+const DATABASE_CHOICE_YELLOW = 'BF8F00';
 
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * A stored translation that offers alternatives rather than one answer.
+ *
+ * The approved database holds values like "aroma / smaak" and
+ * "arôme / saveur / goût". Those are a choice, not a translation, so printing
+ * one on a label is wrong whichever way you read it. They come out yellow
+ * instead of green so QA knows to pick one.
+ */
+function hasAlternatives(value) {
+  const parts = String(value || '').split('/');
+  if (parts.length < 2) return false;
+  return parts.filter((part) => /\p{L}/u.test(part)).length >= 2;
 }
 
 function unique(values) {
@@ -61,68 +70,6 @@ function termVariants(term) {
   ]);
 }
 
-function replacementVariants(english) {
-  const variants = termVariants(english);
-  if (/\bSOYA\b/i.test(english)) variants.push(english.replace(/\bSOYA\b/gi, 'SOY'));
-  if (/\bcolour/i.test(english)) variants.push(english.replace(/\bcolour/gi, 'color'));
-  if (/\bflavour/i.test(english)) variants.push(english.replace(/\bflavour/gi, 'flavor'));
-  if (/\bstabiliser/i.test(english)) variants.push(english.replace(/\bstabiliser/gi, 'stabilizer'));
-  if (/\bhydrolysed/i.test(english)) variants.push(english.replace(/\bhydrolysed/gi, 'hydrolyzed'));
-  return unique(variants).filter((variant) => compactKey(variant).length >= 3);
-}
-
-function cleanCandidateTerm(chunk) {
-  return String(chunk || '')
-    .replace(/\bE\s*\d+[a-z]?\b/gi, ' ')
-    .replace(/\b\d+(?:[.,]\d+)?\s*%/g, ' ')
-    .replace(/\b\d+(?:[.,]\d+)?\b/g, ' ')
-    .replace(/\b(?:ingredients|ingredient|sachet|and|or)\b/gi, ' ')
-    .replace(/^[.\-:\s]+|[.\-:\s]+$/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function candidateTermsFromDeclaration(text) {
-  return unique(
-    stripIngredientPrefix(text)
-      .split(TERM_SPLIT_REGEX)
-      .map(cleanCandidateTerm)
-      .filter((term) => /[a-z]/i.test(term))
-      .filter((term) => compactKey(term).length >= 3)
-  );
-}
-
-function patternForTerm(term) {
-  return new RegExp(`${WORD_BOUNDARY_LEFT}${escapeRegExp(term)}${WORD_BOUNDARY_RIGHT}`, 'giu');
-}
-
-function termAppears(text, term) {
-  return patternForTerm(term).test(text);
-}
-
-function findKnownTerms(sourceText, translationDb) {
-  const hits = [];
-  const seen = new Set();
-
-  for (const entry of translationDb.entryList()) {
-    for (const variant of replacementVariants(entry.english)) {
-      if (!termAppears(sourceText, variant)) continue;
-      if (seen.has(entry.key)) break;
-      seen.add(entry.key);
-      hits.push({
-        sourceTerm: variant,
-        databaseTerm: entry.english,
-        translations: entry.translations,
-        source: entry.source
-      });
-      break;
-    }
-    if (hits.length >= 80) break;
-  }
-
-  return hits;
-}
-
 function mergeSegments(segments) {
   const merged = [];
   for (const segment of segments) {
@@ -154,167 +101,107 @@ function mergeSegments(segments) {
   return merged;
 }
 
-function isReviewText(text) {
-  const withoutFixedCodes = String(text || '').replace(/\bE\s*\d+[a-z]?\b/gi, ' ');
-  return /\p{L}/u.test(withoutFixedCodes);
-}
-
-function knownSourceSpans(sourceText, translationDb) {
-  const spans = [];
-  for (const entry of translationDb.entryList()) {
-    for (const variant of replacementVariants(entry.english).sort((a, b) => b.length - a.length)) {
-      const pattern = patternForTerm(variant);
-      for (const match of sourceText.matchAll(pattern)) {
-        spans.push({
-          start: match.index,
-          end: match.index + match[0].length,
-          sourceTerm: match[0],
-          entry,
-          // A term straight from the approved database. Flagged green so the
-          // platform can show and open it too: QA may want to correct a
-          // stored translation.
-          fromDatabase: true
-        });
-      }
-    }
-  }
-
-  spans.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
-
-  const selected = [];
-  let cursor = 0;
-  for (const span of spans) {
-    if (span.start < cursor) continue;
-    selected.push(span);
-    cursor = span.end;
-  }
-  return selected;
-}
-
-function unknownTermsFromDatabaseGaps(sourceText, translationDb) {
-  const terms = [];
-  const spans = knownSourceSpans(sourceText, translationDb);
-  let cursor = 0;
-
-  for (const span of spans) {
-    if (span.start > cursor) {
-      terms.push(...candidateTermsFromDeclaration(sourceText.slice(cursor, span.start)));
-    }
-    cursor = Math.max(cursor, span.end);
-  }
-
-  if (cursor < sourceText.length) {
-    terms.push(...candidateTermsFromDeclaration(sourceText.slice(cursor)));
-  }
-
-  return unique(terms);
-}
-
-function pushGapSegment(segments, text) {
-  if (!text) return;
-  const needsReview = isReviewText(text);
-  segments.push({
-    text,
-    red: needsReview,
-    // Source text that matched no term at all. Marked, but there is no term
-    // to open, so the platform shows it as flagged without making it
-    // clickable.
-    tone: needsReview ? 'red' : '',
-    term: ''
-  });
-}
-
-function spanTextForLanguage(span, languageCode) {
-  if (span.entry) {
-    return span.entry.translations?.[languageCode] || span.entry.translations?.EN || span.entry.english || span.sourceTerm;
-  }
-  return span.aiTerm?.translations?.[languageCode] || span.aiTerm?.translations?.EN || span.translations?.[languageCode] || span.translations?.EN || span.sourceTerm;
-}
-
-function sourceSegmentsForLanguage(sourceText, spans, languageCode) {
-  const segments = [];
-  let cursor = 0;
-
-  for (const span of spans) {
-    pushGapSegment(segments, sourceText.slice(cursor, span.start));
-    const replacement = spanTextForLanguage(span, languageCode);
-    segments.push({
-      text: String(replacement || span.sourceTerm).trim(),
-      red: Boolean(span.red),
-      color: span.color || '',
-      // Explicit tint. A confident AI term is purple with red=false, so a
-      // reader that only looks at `red` would render it as if it came from
-      // the approved database.
-      tone: span.red ? 'red' : span.color ? 'purple' : span.fromDatabase ? 'green' : '',
-      // The English source term this part came from. The platform needs it to
-      // link a translated word back to the term it belongs to.
-      term: span.sourceTerm || ''
-    });
-    cursor = span.end;
-  }
-
-  pushGapSegment(segments, sourceText.slice(cursor));
-  return mergeSegments(segments);
-}
-
 function segmentsToText(segments) {
   return segments.map((segment) => segment.text).join('').replace(/\s+([,;:)])/g, '$1').replace(/([(])\s+/g, '$1').replace(/\s{2,}/g, ' ').trim();
 }
 
-function overlapsAny(span, others) {
-  return others.some((other) => span.start < other.end && span.end > other.start);
-}
+/**
+ * An ingredient name resolved against the approved database, then the AI.
+ *
+ * The order is the whole point of the colour coding: the database is trusted
+ * (green), an AI proposal never is (purple when it is confident, red when it is
+ * not), and a name nothing could resolve stays red with its English text so QA
+ * sees exactly what is missing.
+ */
+function resolveIngredientName(name, translationDb, aiTerms) {
+  const databaseHit = translationDb.lookupMany(termVariants(name));
+  if (databaseHit) {
+    return { tone: 'green', entry: databaseHit, term: name };
+  }
 
-function aiSourceSpans(sourceText, termTranslations = {}, protectedSpans = []) {
-  const spans = [];
-  const terms = Object.keys(termTranslations || {}).sort((a, b) => b.length - a.length);
-  const seen = new Set();
-
-  for (const term of terms) {
-    const aiTerm = termTranslations[term];
-    for (const variant of termVariants(term).sort((a, b) => b.length - a.length)) {
-      const pattern = patternForTerm(variant);
-      for (const match of sourceText.matchAll(pattern)) {
-        const span = {
-          start: match.index,
-          end: match.index + match[0].length,
-          sourceTerm: match[0],
-          aiTerm,
-          red: !aiTerm?.confident,
-          color: aiTerm?.confident ? AI_CONFIDENT_PURPLE : ''
-        };
-        const key = `${span.start}:${span.end}`;
-        if (seen.has(key) || overlapsAny(span, protectedSpans)) continue;
-        seen.add(key);
-        spans.push(span);
-      }
+  for (const variant of termVariants(name)) {
+    const aiTerm = aiTerms.get(compactKey(variant));
+    if (aiTerm) {
+      return { tone: aiTerm.confident ? 'purple' : 'red', aiTerm, term: name };
     }
   }
 
-  return spans.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+  // No database hit and no proposal. Still a term rather than an anonymous
+  // stretch of text, so QA can open it and fill it in.
+  return { tone: 'red', term: name };
 }
 
-function selectSpans(spans) {
-  const selected = [];
-  let cursor = 0;
-
-  for (const span of spans.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start))) {
-    if (span.start < cursor) continue;
-    selected.push(span);
-    cursor = span.end;
+/** AI proposals by normalised key, so a spelling variant still finds them. */
+function indexAiTerms(termTranslations) {
+  const index = new Map();
+  for (const [term, value] of Object.entries(termTranslations || {})) {
+    if (!value) continue;
+    for (const variant of termVariants(term)) index.set(compactKey(variant), value);
   }
-  return selected;
+  return index;
+}
+
+function translationForResolved(resolved, languageCode) {
+  if (resolved.entry) {
+    const translations = resolved.entry.translations || {};
+    return String(
+      translations[languageCode] || translations.EN || resolved.entry.english || resolved.term
+    ).trim();
+  }
+  if (resolved.aiTerm) {
+    const translations = resolved.aiTerm.translations || {};
+    return String(translations[languageCode] || translations.EN || resolved.term).trim();
+  }
+  return resolved.term;
+}
+
+/**
+ * Builds one language from the resolved parts.
+ *
+ * Fixed parts are copied verbatim, so percentages and E-numbers keep their place
+ * next to the ingredient they belong to without ever being translated.
+ */
+function segmentsFromResolvedParts(parts, languageCode) {
+  const segments = [];
+
+  for (const part of parts) {
+    if (part.kind === 'fixed') {
+      // Where the percentages live, so this is where the decimal comma lands.
+      segments.push({ text: withDecimalComma(part.text), red: false, color: '', tone: '', term: '' });
+      continue;
+    }
+
+    const resolved = part.resolved;
+    const value = translationForResolved(resolved, languageCode);
+    // Judged per language: a term can be a single word in Dutch and a choice of
+    // three in French, and only the French line needs picking.
+    const tone = resolved.tone === 'green' && hasAlternatives(value) ? 'yellow' : resolved.tone;
+
+    segments.push({
+      text: withDecimalComma(value),
+      red: tone === 'red',
+      color: tone === 'purple' ? AI_CONFIDENT_PURPLE : tone === 'yellow' ? DATABASE_CHOICE_YELLOW : '',
+      tone,
+      term: resolved.term
+    });
+  }
+
+  return mergeSegments(segments);
 }
 
 function buildDatabaseTermTranslationResult(sourceText, translationDb, termTranslations = {}) {
-  const databaseSpans = knownSourceSpans(sourceText, translationDb);
-  const aiSpans = aiSourceSpans(sourceText, termTranslations, databaseSpans);
-  const spans = selectSpans([...databaseSpans, ...aiSpans]);
+  const aiTerms = indexAiTerms(termTranslations);
+  const parts = parseIngredientParts(sourceText).map((part) =>
+    part.kind === 'text'
+      ? { ...part, resolved: resolveIngredientName(part.text, translationDb, aiTerms) }
+      : part
+  );
+
   const translations = {};
   const languageSegments = {};
 
   for (const language of LANGUAGES) {
-    const segments = sourceSegmentsForLanguage(sourceText, spans, language.code);
+    const segments = segmentsFromResolvedParts(parts, language.code);
     translations[language.code] = segmentsToText(segments);
     languageSegments[language.code] = segments;
   }
@@ -322,40 +209,49 @@ function buildDatabaseTermTranslationResult(sourceText, translationDb, termTrans
   return { translations, languageSegments };
 }
 
+/** Every stored translation with its decimals written the label's way. */
+function withDecimalCommaValues(translations) {
+  return Object.fromEntries(
+    Object.entries(translations || {}).map(([code, value]) => [code, withDecimalComma(value)])
+  );
+}
+
 function buildExactTranslationSegments(translations) {
   return Object.fromEntries(
     LANGUAGES.map((language) => {
-      const text = translations?.[language.code] || translations?.EN || '';
+      const text = withDecimalComma(translations?.[language.code] || translations?.EN || '');
       return [language.code, text ? [{ text, red: false, tone: '', term: '' }] : []];
     })
   );
 }
 
+/**
+ * Which ingredients the database already knows, and which have to go to the AI.
+ *
+ * Works on whole ingredient names. Asking about the loose words inside one
+ * ingredient produced translations that were wrong per ingredient even when
+ * every single word was right: "mango jam" is "mangojam" in Dutch, not "mango"
+ * followed by "jam".
+ */
 export function analyzeIngredientsTerminology(sourceText, translationDb) {
-  const candidates = candidateTermsFromDeclaration(sourceText);
-  const gapTerms = unknownTermsFromDatabaseGaps(sourceText, translationDb);
+  const knownTerms = [];
   const unmatchedTerms = [];
-  const exactTermHits = [];
 
-  for (const term of candidates) {
-    const hit = translationDb.lookupMany(termVariants(term));
+  for (const name of ingredientNames(sourceText)) {
+    const hit = translationDb.lookupMany(termVariants(name));
     if (hit) {
-      exactTermHits.push({
-        sourceTerm: term,
+      knownTerms.push({
+        sourceTerm: name,
         databaseTerm: hit.english,
         translations: hit.translations,
         source: hit.source
       });
     } else {
-      unmatchedTerms.push(term);
+      unmatchedTerms.push(name);
     }
   }
 
-  return {
-    exactTermHits,
-    knownTerms: findKnownTerms(sourceText, translationDb),
-    unmatchedTerms: gapTerms.length ? gapTerms : unique(unmatchedTerms)
-  };
+  return { exactTermHits: knownTerms, knownTerms, unmatchedTerms };
 }
 
 export async function translateIngredientsDeclaration({
@@ -373,7 +269,7 @@ export async function translateIngredientsDeclaration({
       sourceText: cleanSource,
       status: 'database',
       trusted: true,
-      translations: exactHit.translations,
+      translations: withDecimalCommaValues(exactHit.translations),
       languageSegments: buildExactTranslationSegments(exactHit.translations),
       reviewRequired: false,
       reviewReason: '',
@@ -468,10 +364,15 @@ export async function translateIngredientsDeclaration({
     sourceText: cleanSource,
     status: hasUnknownTerms ? 'database_terms_manual_required' : 'database_terms',
     trusted: !hasUnknownTerms,
-    translations: hasUnknownTerms ? translated.translations : { ...translated.translations, EN: cleanSource },
+    translations: hasUnknownTerms
+      ? translated.translations
+      : { ...translated.translations, EN: withDecimalComma(cleanSource) },
     languageSegments: hasUnknownTerms
       ? translated.languageSegments
-      : { ...translated.languageSegments, EN: [{ text: cleanSource, red: false, tone: '', term: '' }] },
+      : {
+          ...translated.languageSegments,
+          EN: [{ text: withDecimalComma(cleanSource), red: false, tone: '', term: '' }]
+        },
     reviewRequired: hasUnknownTerms,
     reviewReason: hasUnknownTerms
       ? 'Ingredientendeclaratie is gedeeltelijk uit Labels_13_talen.xlsx opgebouwd; onbekende samengestelde termen vereisen juridische QA.'

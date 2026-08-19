@@ -281,7 +281,7 @@ function buildTranslationFields(translations) {
  * so using that list produced groups for words that appear nowhere — and left
  * marked words without a group, which made them dead clicks.
  */
-const TONE_RANK = { green: 0, purple: 1, red: 2 };
+const TONE_RANK = { green: 0, yellow: 1, purple: 2, red: 3 };
 
 function markedTerms(job) {
   const terms = new Map();
@@ -335,17 +335,20 @@ function buildTermFields(translations) {
     const grade =
       tone === 'green'
         ? { colorStatus: 'green', source: 'database', confidence: null }
-        : tone === 'purple'
-          ? {
-              colorStatus: 'purple',
-              source: 'ai_high',
-              confidence: Number.isFinite(confidence) ? confidence : null
-            }
-          : {
-              colorStatus: 'red',
-              source: 'ai_uncertain',
-              confidence: Number.isFinite(confidence) ? confidence : null
-            };
+        : tone === 'yellow'
+          ? // From the database, but the stored value offers alternatives.
+            { colorStatus: 'yellow', source: 'database', confidence: null }
+          : tone === 'purple'
+            ? {
+                colorStatus: 'purple',
+                source: 'ai_high',
+                confidence: Number.isFinite(confidence) ? confidence : null
+              }
+            : {
+                colorStatus: 'red',
+                source: 'ai_uncertain',
+                confidence: Number.isFinite(confidence) ? confidence : null
+              };
 
     const groupKey = `term:${slugify(sourceTerm)}`;
 
