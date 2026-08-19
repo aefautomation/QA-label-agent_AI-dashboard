@@ -97,6 +97,78 @@ export class LabelRunStore {
     if (error) console.error(`Kon status "failed" niet zetten: ${error.message}`);
   }
 
+  /**
+ * Finds the row for an agent run id.
+ *
+ * Finalizing happens long after the run — possibly days later, certainly after a
+ * Railway restart — so the agent cannot look this up in its own memory.
+ */
+  async findRunByAgentRunId(agentRunId) {
+    if (!this.enabled) return null;
+
+    const { data, error } = await this.client
+      .from(RUN_TABLE)
+      .select('id, run_id, status, article_number, product_name')
+      .eq('run_id', agentRunId)
+      .maybeSingle();
+
+    if (error) throw new Error(`Kon label_run ${agentRunId} niet lezen: ${error.message}`);
+    return data ?? null;
+  }
+
+  /** Storage path of one artifact of a run, e.g. the uploaded specification. */
+  async findArtifactPath({ runRowId, artifactType }) {
+    if (!this.enabled || !runRowId) return null;
+
+    const { data, error } = await this.client
+      .from(ARTIFACT_TABLE)
+      .select('path')
+      .eq('label_run_id', runRowId)
+      .eq('artifact_type', artifactType)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw new Error(`Kon artifact ${artifactType} niet lezen: ${error.message}`);
+    return data?.path ?? null;
+  }
+
+  /**
+   * Records the definitive document.
+   *
+   * Replaces an earlier final document rather than adding a second one, so a
+   * re-finalized run does not leave two files that both claim to be definitive.
+   */
+  async writeFinalArtifact({ runRowId, path: objectPath, label, approvedBy, detail }) {
+    if (!this.enabled || !runRowId) return;
+
+    const { error: deleteError } = await this.client
+      .from(ARTIFACT_TABLE)
+      .delete()
+      .eq('label_run_id', runRowId)
+      .eq('artifact_type', 'final_docx');
+
+    if (deleteError) {
+      throw new Error(`Kon oud definitief label niet opruimen: ${deleteError.message}`);
+    }
+
+    const { error } = await this.client.from(ARTIFACT_TABLE).insert({
+      label_run_id: runRowId,
+      artifact_type: 'final_docx',
+      label: label || 'Definitief label (Word)',
+      path: objectPath,
+      url: null
+    });
+
+    if (error) throw new Error(`Kon definitief label niet vastleggen: ${error.message}`);
+
+    await this.recordEvent({
+      runRowId,
+      eventType: 'final_document_rendered',
+      detail: { approvedBy: approvedBy || null, path: objectPath, ...(detail ?? {}) }
+    });
+  }
+
   async recordEvent({ runRowId, eventType, detail }) {
     if (!this.enabled || !runRowId) return;
 

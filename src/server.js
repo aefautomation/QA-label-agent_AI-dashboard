@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { env, getConfig, hasSharePointConfig, hasSupabaseConfig } from './config.js';
 import { makeRunId, runLabelJob } from './labelAgent.js';
+import { FinalizeError, finalizeLabelDocument } from './platform/finalizeLabel.js';
 
 const config = getConfig();
 const uploadDir = path.join(config.tmpRoot, 'uploads');
@@ -19,7 +20,7 @@ const upload = multer({
 });
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '8mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 const jobs = new Map();
@@ -38,7 +39,8 @@ const BUILD_FEATURES = [
   'readonly-declaration',
   'segment-tone',
   'segment-term',
-  'term-groups'
+  'term-groups',
+  'finalize-docx'
 ];
 
 function requireAuth(req, res, next) {
@@ -161,6 +163,33 @@ app.get('/labels/:runId', requireAuth, async (req, res) => {
     pollAfterSeconds: 20,
     statusUrl: publicEndpoint(`/labels/${job.runId}`)
   });
+});
+
+/**
+ * Renders the definitive label from the values QA approved in the platform.
+ *
+ * Separate from the run on purpose: the run produces a concept, this produces the
+ * document that goes out. It reads the specification back out of Storage instead
+ * of trusting the agent's memory, so finalizing still works days later and across
+ * deploys.
+ */
+app.post('/labels/:runId/finalize', requireAuth, async (req, res, next) => {
+  try {
+    const result = await finalizeLabelDocument({
+      agentRunId: req.params.runId,
+      labelModel: req.body?.labelModel,
+      approvedBy: req.body?.approvedBy || '',
+      config
+    });
+
+    return res.json(result);
+  } catch (error) {
+    if (error instanceof FinalizeError) {
+      console.error(error);
+      return res.status(error.status).json({ status: 'failed', error: error.message });
+    }
+    return next(error);
+  }
 });
 
 app.post('/labels', requireAuth, upload.any(), async (req, res, next) => {

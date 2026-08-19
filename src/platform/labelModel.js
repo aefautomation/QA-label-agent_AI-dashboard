@@ -37,6 +37,15 @@ const JOB_META = {
   fishingMethod: { section: 'fishery', category: 'fishery', fieldKey: 'fishing_gear' }
 };
 
+/**
+ * The translation jobs that become a label field, as a set.
+ *
+ * Exported so the finalize step can tell a translated label field from a term
+ * field without repeating this list: getting that wrong would silently drop a
+ * language from the definitive document.
+ */
+export const TRANSLATION_JOB_KEYS = new Set(Object.keys(JOB_META));
+
 function slugify(value) {
   return (
     normalizeText(value)
