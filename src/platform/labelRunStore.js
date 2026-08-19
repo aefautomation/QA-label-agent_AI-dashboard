@@ -186,7 +186,7 @@ export class LabelRunStore {
     if (!this.enabled || !runRowId) return null;
 
     const now = new Date().toISOString();
-    const { labelModel, reviewItems, artifacts, previewHtml, previewText, emailReport } = platformModel;
+    const { labelModel, reviewItems, artifacts, warnings, previewHtml, previewText, emailReport } = platformModel;
     const reviewRequired = reviewItems.some((item) => item.required);
 
     const { error: runError } = await this.client
@@ -194,7 +194,8 @@ export class LabelRunStore {
       .update({
         run_id: agentRunId,
         status: 'review',
-        status_message: null,
+        // A failed AI call must not read as a finished run.
+        status_message: warnings?.length ? warnings.join(' ') : null,
         error_message: null,
         article_number: labelModel.articleNumber,
         product_name: labelModel.productName,

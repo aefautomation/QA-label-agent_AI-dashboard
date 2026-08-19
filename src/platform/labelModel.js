@@ -61,6 +61,31 @@ function text(value) {
 }
 
 /** Colour + source for one translated field, from its status and confidence. */
+/**
+ * Statuses that mean the AI never produced anything for this field.
+ *
+ * These have to be reported on the run itself. The reason lives on the field,
+ * and the ingredient declaration is read-only, so it is not a review point and
+ * its message is never shown: a failed AI call looked exactly like a label full
+ * of genuinely uncertain terms.
+ */
+const FAILED_STATUSES = new Set(['openai_fallback_error', 'fallback_error', 'database_terms_after_openai_error']);
+
+function translationWarnings(translations) {
+  const warnings = [];
+
+  for (const [jobKey, job] of Object.entries(translations ?? {})) {
+    const status = String(job?.status ?? '');
+    const sourceType = String(job?.source?.type ?? '');
+    if (!FAILED_STATUSES.has(status) && !FAILED_STATUSES.has(sourceType)) continue;
+
+    const reason = text(job?.reviewReason) ?? 'onbekende fout';
+    warnings.push(`AI-vertaling mislukt voor "${job?.fieldName || jobKey}": ${reason}`);
+  }
+
+  return warnings;
+}
+
 function gradeTranslation(job) {
   const status = String(job?.status ?? '');
 
@@ -543,6 +568,9 @@ export function buildPlatformLabelModel({ spec, translations, documents, emailRe
     labelModel,
     reviewItems,
     artifacts,
+    // Shown on the run in the platform, so QA knows the red terms are the result
+    // of a failed call rather than of genuine uncertainty.
+    warnings: translationWarnings(translations),
     previewText: emailReport?.text ?? null,
     previewHtml: emailReport?.html ?? null,
     emailReport: emailReport?.text ?? null

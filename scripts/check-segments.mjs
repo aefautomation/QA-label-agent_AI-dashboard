@@ -170,6 +170,34 @@ check('onopgeloste termen blokkeren wel', blocking.has('term:mango-jam'));
 // until someone has picked a variant.
 check('gele term blokkeert wel', blocking.has('term:flavour'));
 
+// A failed AI call has to be reported on the run. Its reason sits on the
+// declaration field, and that field is read-only and therefore not a review
+// point, so without this the label just showed untranslated red terms with no
+// explanation anywhere.
+const failedRun = buildPlatformLabelModel({
+  spec: { articleNumber: 'TEST-1', productName: 'Testproduct' },
+  translations: {
+    ingredients: {
+      fieldName: 'Ingredientendeclaratie',
+      status: 'openai_fallback_error',
+      sourceText: SOURCE,
+      translations: { EN: SOURCE },
+      reviewRequired: true,
+      reviewReason: 'OpenAI/research faalde: fetch failed'
+    }
+  },
+  documents: {},
+  emailReport: null
+});
+
+console.log('');
+console.log('WAARSCHUWING BIJ EEN MISLUKTE AI-AANROEP');
+console.log('  ' + JSON.stringify(failedRun.warnings));
+
+check('mislukte AI-aanroep wordt gemeld', failedRun.warnings.length === 1);
+check('de melding noemt de oorzaak', failedRun.warnings[0]?.includes('fetch failed'));
+check('een geslaagde run meldt niets', model.warnings.length === 0);
+
 console.log('');
 console.log('CONTROLES');
 let bad = 0;

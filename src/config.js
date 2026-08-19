@@ -59,7 +59,19 @@ export function getConfig() {
       enableFallback: boolEnv('OPENAI_ENABLE_FALLBACK', true),
       enableWebSearch: boolEnv('OPENAI_ENABLE_WEB_SEARCH', true),
       confidencePurpleThreshold: Number(env('OPENAI_CONFIDENCE_PURPLE_THRESHOLD', '0.8')),
-      timeoutMs: Number(env('OPENAI_TIMEOUT_MS', '60000'))
+      // Ten minutes. The ingredient declaration escalates to the
+      // review model with web search and answers in a single non-streaming
+      // response, so fetch() returns nothing until generation is finished --
+      // 20k tokens takes minutes. At 60 seconds that call was cut off while
+      // OpenAI happily completed it, which cost every AI translation in the
+      // declaration and left the label full of untranslated red terms. Giving it
+      // room is cheaper than losing the run: the answer is worth the wait.
+      timeoutMs: Number(env('OPENAI_TIMEOUT_MS', '600000')),
+      // A transient network failure on that one call must not lose the run.
+      // Two, not three: at a ten-minute timeout a third attempt would push one
+      // field past half an hour without ever having produced anything.
+      maxAttempts: Math.max(1, Number(env('OPENAI_MAX_ATTEMPTS', '2'))),
+      retryDelayMs: Math.max(0, Number(env('OPENAI_RETRY_DELAY_MS', '4000')))
     },
     sharePoint: {
       tenantId: env('SHAREPOINT_TENANT_ID'),

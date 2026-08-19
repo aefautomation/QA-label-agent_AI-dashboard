@@ -59,6 +59,54 @@ function confidenceDetails(raw = {}) {
   };
 }
 
+/** Worth trying again: a network hiccup, a rate limit or a server error. */
+function isRetryable(error) {
+  if (!error) return false;
+  // Set explicitly where the status alone would mislead: a body that dies
+  // halfway carries HTTP 200 while being a transport failure.
+  if (error.retryable !== undefined) return Boolean(error.retryable);
+  if (error.status && error.status !== 429 && error.status < 500) return false;
+  return true;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Calls OpenAI, and tries again when the attempt failed for a reason that can
+ * pass.
+ *
+ * One failure here used to cost the whole declaration: the agent fell back to
+ * "database terms only", so every unknown ingredient stayed English and red
+ * while OpenAI had actually answered. Nothing said so on the label, which made
+ * it look like a bug in the platform.
+ */
+async function requestOpenAiJsonWithRetry({ config, model, input }) {
+  const attempts = Math.max(1, Number(config.maxAttempts || 3));
+  const delay = Math.max(0, Number(config.retryDelayMs ?? 4000));
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await requestOpenAiJson({ config, model, input });
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts || !isRetryable(error)) break;
+
+      // Linear backoff: the failures worth retrying here are timeouts and
+      // dropped sockets, where waiting longer helps more than waiting smarter.
+      const pause = delay * attempt;
+      console.warn(
+        `OpenAI poging ${attempt}/${attempts} mislukt (${error.message}); opnieuw over ${pause} ms.`
+      );
+      await wait(pause);
+    }
+  }
+
+  throw lastError;
+}
+
 async function requestOpenAiJson({ config, model, input }) {
   const payload = {
     model,
@@ -90,9 +138,28 @@ async function requestOpenAiJson({ config, model, input }) {
     clearTimeout(timeout);
   }
 
-  const responseJson = await response.json().catch(() => ({}));
+  // Not swallowed: an empty object here reads as "OpenAI returned nothing
+  // useful", while the real cause is a body that died halfway. That is
+  // retryable, and only visible if it is allowed to surface.
+  let responseJson;
+  try {
+    responseJson = await response.json();
+  } catch (error) {
+    const broken = new Error(
+      `OpenAI-antwoord kon niet gelezen worden (HTTP ${response.status}): ${error.message}`
+    );
+    // The status says 200 because the headers arrived; the body did not. That is
+    // a dropped connection, so it is worth another attempt.
+    broken.retryable = true;
+    throw broken;
+  }
+
   if (!response.ok) {
-    throw new Error(`OpenAI fallback mislukt (${response.status}): ${responseJson.error?.message || response.statusText}`);
+    const failure = new Error(
+      `OpenAI fallback mislukt (${response.status}): ${responseJson.error?.message || response.statusText}`
+    );
+    failure.status = response.status;
+    throw failure;
   }
 
   return parseJsonResponse(extractOutputText(responseJson));
@@ -217,7 +284,7 @@ Return only JSON:
   "sources": ["url"]
 }`;
 
-  const parsed = await requestOpenAiJson({
+  const parsed = await requestOpenAiJsonWithRetry({
     config,
     model: selectedModel.model,
     input
@@ -374,7 +441,7 @@ Return only JSON:
   "sources": ["url"]
 }`;
 
-  const parsed = await requestOpenAiJson({
+  const parsed = await requestOpenAiJsonWithRetry({
     config,
     model: selectedModel.model,
     input
