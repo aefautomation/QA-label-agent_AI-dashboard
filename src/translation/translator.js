@@ -1,6 +1,7 @@
 // Translates one label field: first via the translation database, then via OpenAI fallback when needed.
 import { LANGUAGES } from '../config.js';
 import { translateWithOpenAi } from './openaiFallback.js';
+import { translationOptionLanguages } from './translationOptions.js';
 
 function allLanguages(text) {
   return Object.fromEntries(LANGUAGES.map((language) => [language.code, text || '']));
@@ -26,20 +27,43 @@ function applySourcePlaceholders(translations, sourceText) {
   return hydrated;
 }
 
-export async function translateField({ fieldName, sourceText, translationDb, openaiConfig, productContext, candidates = [] }) {
+export async function translateField({
+  fieldName,
+  sourceText,
+  translationDb,
+  openaiConfig,
+  productContext,
+  candidates = [],
+  /**
+   * Which kind of label field this is, so the prompt can carry the rules for it.
+   * Translating a warning, a sales name and a catch area by the same generic
+   * instruction is what produced wording nobody would put on a label.
+   */
+  fieldKind = ''
+}) {
   const candidateTexts = [sourceText, ...candidates].filter(Boolean);
   const dbHit = translationDb.lookupMany(candidateTexts);
   if (dbHit) {
+    const translations = applySourcePlaceholders(dbHit.translations, sourceText);
+    // A stored value that offers alternatives is not an answer. Without this the
+    // field came back trusted and green, and QA was never asked to pick one.
+    const optionLanguages = translationOptionLanguages(translations);
+    const hasOptions = optionLanguages.length > 0;
+
     return {
       fieldName,
       sourceText,
-      status: 'database',
-      trusted: true,
-      translations: applySourcePlaceholders(dbHit.translations, sourceText),
-      reviewRequired: false,
-      reviewReason: '',
+      status: hasOptions ? 'database_options' : 'database',
+      trusted: !hasOptions,
+      translations,
+      reviewRequired: hasOptions,
+      reviewReason: hasOptions
+        ? 'Vertalingendatabase bevat meerdere opties; QA moet de juiste optie kiezen.'
+        : '',
       source: dbHit.source,
-      notes: []
+      notes: hasOptions
+        ? [`Opties gevonden in taal/talen: ${optionLanguages.join(', ')}.`]
+        : []
     };
   }
 
@@ -48,7 +72,8 @@ export async function translateField({ fieldName, sourceText, translationDb, ope
       fieldName,
       sourceText,
       config: openaiConfig,
-      productContext
+      productContext,
+      fieldKind
     });
 
     return {

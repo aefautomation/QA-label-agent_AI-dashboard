@@ -132,6 +132,7 @@ export async function buildTranslationsForSpec({ spec, translationDb, openaiConf
   const jobs = {
     productName: {
       fieldName: 'Productnaam / wettelijke benaming',
+      fieldKind: 'legalProduct',
       sourceText: spec.legalProduct || spec.description,
       candidates: [spec.description]
     },
@@ -142,31 +143,37 @@ export async function buildTranslationsForSpec({ spec, translationDb, openaiConf
     },
     origin: {
       fieldName: 'Herkomst / land van productie',
+      fieldKind: 'origin',
       sourceText: spec.countryOfProduction,
       candidates: [spec.countryOfProduction?.toUpperCase(), spec.countryOfProduction?.toLowerCase()]
     },
     direction: {
       fieldName: 'Bereidingswijze',
+      fieldKind: 'preparation',
       sourceText: spec.storage.directionForUse,
       candidates: []
     },
     warning: {
       fieldName: 'Waarschuwing',
+      fieldKind: 'warning',
       sourceText: spec.storage.warning,
       candidates: warningCandidates(spec.storage.warning)
     },
     productionMethod: {
       fieldName: 'Visserij productiemethode',
+      fieldKind: 'fishery',
       sourceText: spec.fish.productionMethod,
       candidates: []
     },
     fishingArea: {
       fieldName: 'Visserij vangstgebied',
+      fieldKind: 'fishery',
       sourceText: spec.fish.fishingArea || spec.fish.fao27Detail || spec.fish.fao37Detail || spec.fish.fao,
       candidates: [spec.fish.fao, spec.fish.fao27Detail, spec.fish.fao37Detail]
     },
     fishingMethod: {
       fieldName: 'Visserij vangstmethode',
+      fieldKind: 'fishery',
       sourceText: spec.fish.fishingMethod,
       candidates: []
     }

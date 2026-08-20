@@ -5,6 +5,25 @@ import { splitIngredientDeclarationAndWarnings } from '../translation/ingredient
 
 const BASIC_SHEET = '2. BASIC';
 
+/**
+ * Finds the BASIC sheet even when a supplier named the tab slightly differently.
+ *
+ * Matching the exact string meant a workbook with "BASIC" or "2 BASIC" failed the
+ * whole run, while the sheet was right there. Widened in three steps so the
+ * intended tab still wins when several contain the word.
+ */
+function resolveBasicSheetName(workbook) {
+  if (workbook.Sheets[BASIC_SHEET]) return BASIC_SHEET;
+
+  const normalizedExact = workbook.SheetNames.find((sheetName) => normalizeText(sheetName) === 'basic');
+  if (normalizedExact) return normalizedExact;
+
+  const containsBasic = workbook.SheetNames.find((sheetName) => normalizeText(sheetName).includes('basic'));
+  if (containsBasic) return containsBasic;
+
+  throw new Error(`Geen BASIC werkblad gevonden. Beschikbare tabs: ${workbook.SheetNames.join(', ')}`);
+}
+
 function cleanCell(value) {
   return String(value ?? '')
     .replace(/\r\n/g, '\n')
@@ -242,7 +261,7 @@ function inferFrozen(spec) {
 
 export function parseSpecification(specPath) {
   const workbook = readWorkbook(specPath);
-  const rows = sheetRows(workbook, BASIC_SHEET);
+  const rows = sheetRows(workbook, resolveBasicSheetName(workbook));
 
   const energy = energyValues(rows);
   const rawIngredientsDeclaration = valueRightOfLabel(rows, 'INGREDIENT DECLARATION', { maxOffset: 12 });

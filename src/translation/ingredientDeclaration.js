@@ -1,26 +1,13 @@
 // Builds ingredient declarations from trusted database terminology and marks unknown parts for review.
 import { LANGUAGES } from '../config.js';
 import { compactKey, withDecimalComma } from '../utils/normalize.js';
+import { hasTranslationOptions } from './translationOptions.js';
 import { ingredientNames, parseIngredientParts } from './ingredientParts.js';
 import { translateIngredientTermsWithOpenAi } from './openaiFallback.js';
 
 const INGREDIENT_PREFIX = /^ingredients:\s*/i;
 const AI_CONFIDENT_PURPLE = '7030A0';
 const DATABASE_CHOICE_YELLOW = 'BF8F00';
-
-/**
- * A stored translation that offers alternatives rather than one answer.
- *
- * The approved database holds values like "aroma / smaak" and
- * "arôme / saveur / goût". Those are a choice, not a translation, so printing
- * one on a label is wrong whichever way you read it. They come out yellow
- * instead of green so QA knows to pick one.
- */
-function hasAlternatives(value) {
-  const parts = String(value || '').split('/');
-  if (parts.length < 2) return false;
-  return parts.filter((part) => /\p{L}/u.test(part)).length >= 2;
-}
 
 function unique(values) {
   return Array.from(new Set(values.filter(Boolean)));
@@ -175,7 +162,7 @@ function segmentsFromResolvedParts(parts, languageCode) {
     const value = translationForResolved(resolved, languageCode);
     // Judged per language: a term can be a single word in Dutch and a choice of
     // three in French, and only the French line needs picking.
-    const tone = resolved.tone === 'green' && hasAlternatives(value) ? 'yellow' : resolved.tone;
+    const tone = resolved.tone === 'green' && hasTranslationOptions(value) ? 'yellow' : resolved.tone;
 
     segments.push({
       text: withDecimalComma(value),

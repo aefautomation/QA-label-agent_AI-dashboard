@@ -18,6 +18,13 @@ import { isMeaningful, normalizeText } from '../utils/normalize.js';
 
 // Fully from the approved translation database, so trusted.
 const GREEN_STATUSES = new Set(['database', 'database_terms']);
+/**
+ * From the approved database, but the stored value is a list of alternatives.
+ *
+ * Yellow rather than green, and review-required: "aroma / smaak" is a choice
+ * nobody has made yet, so calling it trusted puts an unmade decision on a label.
+ */
+const CHOICE_STATUSES = new Set(['database_options']);
 const RESEARCH_STATUSES = new Set(['openai_researched', 'openai_terms_researched']);
 const SKIP_STATUSES = new Set(['empty', 'not_applicable']);
 // The ingredient declaration was assembled from database terms, but it contained
@@ -91,6 +98,10 @@ function gradeTranslation(job) {
 
   if (GREEN_STATUSES.has(status)) {
     return { colorStatus: 'green', source: 'database', confidence: null };
+  }
+
+  if (CHOICE_STATUSES.has(status)) {
+    return { colorStatus: 'yellow', source: 'database', confidence: null };
   }
 
   if (RESEARCH_STATUSES.has(status)) {

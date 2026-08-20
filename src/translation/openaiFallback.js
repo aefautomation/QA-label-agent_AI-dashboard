@@ -246,9 +246,72 @@ Terms without exact database match, requiring legal research:
 ${unmatchedTerms.length ? unmatchedTerms.map((term) => `- ${term}`).join('\n') : '- none'}
 `
     : '';
+  const preparationInstructions = fieldKind === 'preparation'
+    ? `
+Preparation/direction-for-use rules:
+- Translate as a clear consumer label instruction, not as a literal supplier-text translation.
+- First normalize obvious broken supplier English internally, but do not add missing steps or product facts.
+- Preserve quantities, water volumes, temperatures, time ranges, order of actions and punctuation meaning.
+- For preparation verbs such as "steep", "stand", "rest", "wait" or similar, choose the natural consumer-label wording per target language. The best word choice can differ by language; do not force one literal source-language verb into every language.
+- Do not add instructions such as cover, stir, drain, microwave or serve unless they are present in the source text.
+- If the source text is ambiguous, still provide the best practical label translation but set confidence to "medium" or "low" and explain why.
+`
+    : '';
+  const legalProductInstructions = fieldKind === 'legalProduct'
+    ? `
+Legal product / product name rules:
+- Translate as a legal or descriptive sales name for a food label, not as marketing copy.
+- Preserve brand names, product ranges and pack-format words when they are part of the name.
+- Do not add ingredients, species, claims, quality grades, nutrition claims or preparation states that are not present in the source or product context.
+- Treat words such as flavour, style, type, aroma, imitation or similar carefully. Do not imply that a named ingredient is present when the source only describes flavour/style.
+- Prefer clear consumer-understandable naming over literal word order if the literal version sounds unnatural in the target language.
+- Use confidence "high" only when the name is straightforward and does not depend on product classification or composition details.
+- Use confidence "medium" or "low" when the source name could mislead, has unclear legal status, or depends on ingredient/species verification.
+`
+    : '';
+  const warningInstructions = fieldKind === 'warning'
+    ? `
+Warning text rules:
+- Preserve the warning's legal/safety meaning, severity, negations and conditions exactly.
+- Do not soften, shorten away, strengthen, combine with unrelated warnings, or add new warnings.
+- Keep E-numbers, age groups, allergens, storage temperatures, dates and measurements unchanged.
+- Preserve ALL CAPS emphasis when the source uses it for the warning.
+- Use standard consumer safety wording in each target language, but stay close to the source meaning.
+- Use confidence "high" only for standard, unambiguous warnings with no missing context.
+- Use confidence "medium" or "low" when the legal trigger, target group, condition or required local wording is uncertain.
+`
+    : '';
+  const originInstructions = fieldKind === 'origin'
+    ? `
+Origin / country rules:
+- Translate only the country, region or origin statement that is present in the source.
+- Do not infer origin from brand, supplier, language, address or product style.
+- Preserve official country/region meaning and do not add "EU", "non-EU", production method or catch area unless present.
+- For a single country name, return the normal country name used on food labels in each target language.
+- Use confidence "high" only when the source is a clear country or region name.
+- Use confidence "medium" or "low" when the source is abbreviated, ambiguous, mixed with other logistics text, or could mean something other than origin.
+`
+    : '';
+  const fisheryInstructions = fieldKind === 'fishery'
+    ? `
+Fishery/aquaculture field rules:
+- Translate fishery consumer-information fields conservatively and do not guess missing facts.
+- Preserve FAO numbers, catch-area codes, scientific names, gear names and production-method distinctions.
+- Do not convert a FAO code into a more specific area unless that detail is present in the source or product context.
+- Keep a clear distinction between caught at sea, caught in freshwater and farmed/aquaculture.
+- Use standard label terminology for catch area, fishing gear and production method in each target language.
+- Use confidence "high" only when the source value is a clear standard fishery term/code.
+- Use confidence "medium" or "low" when the term is abbreviated, supplier-specific, incomplete or needs official list verification.
+`
+    : '';
   const input = `
 ${LEGAL_TRANSLATION_INSTRUCTIONS}
 ${ingredientInstructions}
+${preparationInstructions}
+${legalProductInstructions}
+${warningInstructions}
+${originInstructions}
+${fisheryInstructions}
 
 Legal reference sources to use/check where relevant:
 ${legalSourceList}
@@ -397,7 +460,7 @@ Strict rules:
 - Preserve allergen emphasis in CAPITALS where relevant.
 - Do not add missing product facts.
 - If a term remains uncertain, provide the best conservative term and explain the uncertainty in notes.
-- Use confidence="high" only when the proposed legal label term is a common/standard formulation and you do not need extra supplier/QA information.
+- Use confidence="high" only per term when the proposed legal label term is a common/standard formulation and you do not need extra supplier/QA information.
 - Use confidence="medium" or "low" when wording depends on context, national convention, product facts, composition details or source interpretation.
 
 Protected database terminology from Labels_13_talen.xlsx. The code will keep these terms green and untouched:

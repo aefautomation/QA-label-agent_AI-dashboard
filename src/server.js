@@ -41,7 +41,8 @@ const BUILD_FEATURES = [
   'segment-term',
   'term-groups',
   'finalize-docx',
-  'openai-retry'
+  'openai-retry',
+  'field-prompts'
 ];
 
 function requireAuth(req, res, next) {
